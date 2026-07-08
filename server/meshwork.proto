@@ -1,0 +1,151 @@
+// server/meshwork.proto
+syntax = "proto3";
+
+package meshwork.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+
+enum Stream {
+  STREAM_UNSPECIFIED = 0;
+  STDOUT = 1;
+  STDERR = 2;
+  EXIT   = 3;
+}
+
+enum Codec {
+  CODEC_NONE = 0;
+  CODEC_LZ4  = 1;
+}
+
+enum FileType {
+  FILE_TYPE_UNSPECIFIED = 0;
+  FILE = 1;
+  DIRECTORY = 2;
+}
+
+// ============================================================================
+// Ping - health check
+// ============================================================================
+message PingRequest {
+  string message = 1;
+}
+
+message PingResponse {
+  string message = 1;
+  google.protobuf.Timestamp timestamp = 2;
+}
+
+// ============================================================================
+// File Transfer
+// ============================================================================
+message FileChunk {
+  string file_path = 1;           // relative path (workspace)
+  uint64 chunk_index = 2;         // chunk index
+  uint64 total_size = 3;          // total file size (or tar size for directory)
+  bytes data = 4;                 // chunk data (or tar data for directory)
+  bool is_last = 5;               // last chunk flag
+  string checksum = 6;            // hex checksum of whole file or tar archive
+  FileType type = 7;              // file or directory
+}
+
+message FileUploadResponse {
+  bool success = 1;
+  string message = 2;
+  string file_path = 3;           // server-side path
+  uint64 bytes_written = 4;       // written bytes
+  FileType type = 5;              // what was uploaded
+  uint64 files_extracted = 6;     // number of files (1 for file, N for directory)
+}
+
+message FileDownloadRequest {
+  string file_path = 1;           // relative path (workspace)
+  uint64 chunk_size = 2;          // requested chunk size (0 = default 64KB)
+}
+
+message FileDownloadResponse {
+  string file_path = 1;
+  uint64 chunk_index = 2;
+  uint64 total_size = 3;
+  bool is_last = 4;
+  FileType type = 5;              // auto-detected file or directory
+
+  oneof payload {
+    bytes data = 6;               // chunk data (or tar data for directory)
+    string error = 7;             // error message
+  }
+
+  string checksum = 8;            // hex checksum of whole file or tar archive
+}
+
+message FileDeleteRequest {
+  string file_path = 1;           // relative path (workspace)
+}
+
+message FileDeleteResponse {
+  bool success = 1;
+  string message = 2;
+  string file_path = 3;           // deleted path
+  FileType type = 4;              // what was deleted
+  uint64 files_deleted = 5;       // number of files deleted (1 for file, N for directory)
+}
+
+// ============================================================================
+// Command / Python Execution
+// ============================================================================
+message ExecRequest {
+  repeated string argv = 1;
+  string cwd = 2;                 // relative working dir
+  map<string, string> env = 3;
+  google.protobuf.Duration timeout = 4;
+
+  // PTY configuration (optional)
+  optional bool use_pty = 5;
+  uint32 pty_rows = 6;            // PTY terminal rows (default: 24)
+  uint32 pty_cols = 7;            // PTY terminal cols (default: 80)
+
+  Codec  preferred_codec    = 30;
+  uint32 compress_threshold = 31;
+}
+
+message OutputFrame {
+  uint64 seq = 1;
+  google.protobuf.Timestamp ts = 2;
+  Stream stream = 3;
+  Codec  codec  = 4;
+  uint64 raw_len = 5;
+  bytes  data = 6;
+
+  int32  exit_code     = 10;
+  int32  signal        = 11;
+  uint64 total_stdout  = 12;
+  uint64 total_stderr  = 13;
+  google.protobuf.Duration duration = 14;
+  bool   timed_out     = 15;
+
+  // Python-specific (optional)
+  string python_version = 20;
+  string working_dir = 21;
+  repeated string import_errors = 22;
+}
+
+message PythonExecRequest {
+  string script_content = 1;            // inline Python code to exec
+  google.protobuf.Duration timeout = 2; // max runtime
+  Codec  preferred_codec    = 30;       // output compression codec
+  uint32 compress_threshold = 31;       // compress when >= bytes
+}
+
+// ============================================================================
+// Service
+// ============================================================================
+service MeshWork {
+  rpc Ping(PingRequest) returns (PingResponse);
+
+  rpc UploadFile(stream FileChunk) returns (FileUploadResponse);
+  rpc DownloadFile(FileDownloadRequest) returns (stream FileDownloadResponse);
+  rpc DeleteFile(FileDeleteRequest) returns (FileDeleteResponse);
+
+  rpc Exec(ExecRequest) returns (stream OutputFrame);
+  rpc PythonExec(PythonExecRequest) returns (stream OutputFrame);
+}

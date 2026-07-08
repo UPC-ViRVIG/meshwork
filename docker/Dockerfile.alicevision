@@ -1,0 +1,87 @@
+# docker/Dockerfile.alicevision
+# AliceVision Service with communication layer
+ARG BASE_TAG=3.2.0-ubuntu20.04-cuda11.3.1
+FROM alicevision/alicevision:${BASE_TAG}
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install communication dependencies
+USER root
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-venv \
+    python3-pip \
+    python3-dev \
+    curl \
+    binutils \
+    file \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create directories
+RUN mkdir -p /app /workspace /socks /app/logs && \
+    chmod 755 /workspace /socks /app/logs
+
+# Create and configure Python virtual environment
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:${PATH}"
+
+# Install minimal Python packages for communication
+RUN python3 -m pip install --no-cache-dir --upgrade pip
+
+# Install compatible protobuf version first
+RUN python3 -m pip install --no-cache-dir \
+    "protobuf>=4.21.0,<5.0.0" \
+    "grpcio>=1.50.0" \
+    "grpcio-tools>=1.50.0"
+
+# Install remaining packages
+COPY server/requirements.txt /tmp/requirements.txt
+RUN python3 -m pip install --no-cache-dir -r /tmp/requirements.txt
+
+# Copy communication layer
+COPY server/main.py /app/
+COPY server/exec_ops.py /app/
+COPY server/file_ops.py /app/
+COPY server/utils.py /app/
+COPY server/meshwork.proto /app/
+COPY server/healthcheck.py /usr/local/bin/healthcheck.py
+COPY server/recon_alicevision.sh /app/recon.sh
+
+# Regenerate protobuf files with compatible version
+WORKDIR /app
+RUN python3 -m grpc_tools.protoc \
+    --proto_path=. \
+    --python_out=. \
+    --grpc_python_out=. \
+    meshwork.proto
+
+# Set AliceVision environment paths
+ENV PATH="/opt/AliceVision_bundle/bin:/opt/AliceVision_install/bin:${PATH}"
+ENV LD_LIBRARY_PATH="/opt/AliceVision_bundle/lib:/opt/AliceVision_install/lib:${LD_LIBRARY_PATH}"
+
+# Set ALICEVISION_ROOT for OCIO config access
+ENV ALICEVISION_ROOT="/opt/AliceVision_bundle"
+
+# Alternative fallback if bundle not found
+RUN if [ ! -d "/opt/AliceVision_bundle" ] && [ -d "/opt/AliceVision_install" ]; then \
+        echo "Using AliceVision_install as fallback"; \
+    fi
+
+# Set environment
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+
+# GPU detection entrypoint
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh /usr/local/bin/healthcheck.py /app/recon.sh
+
+# Health check using unified gRPC ping
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=30s \
+    CMD SERVICE_NAME=alicevision SERVICE_PORT=50053 python3 /usr/local/bin/healthcheck.py || exit 1
+
+# Expose gRPC port
+EXPOSE 50053
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["python3", "main.py", "--service", "alicevision", "--port", "50053"]

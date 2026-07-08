@@ -1,0 +1,94 @@
+# docker/Dockerfile.blender
+# Blender Service - CUDA + Blender
+ARG CUDA_VERSION=11.8.0
+FROM nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu22.04
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    wget \
+    xz-utils \
+    python3 \
+    python3-venv \
+    python3-pip \
+    python3-dev \
+    binutils \
+    file \
+    tree \
+    vim \
+    libx11-6 \
+    libgl1 \
+    libxkbcommon0 \
+    libxrender1 \
+    libxi6 \
+    libsm6 \
+    libice6 \
+ && rm -rf /var/lib/apt/lists/*
+
+# Download and extract Blender official tarball
+ARG BLENDER_VERSION=4.2.0
+ARG BLENDER_TAR=blender-${BLENDER_VERSION}-linux-x64.tar.xz
+ARG BLENDER_URL=https://download.blender.org/release/Blender${BLENDER_VERSION%.*}/${BLENDER_TAR}
+
+RUN curl -fsSL "$BLENDER_URL" -o /tmp/${BLENDER_TAR} \
+ && tar -xJf /tmp/${BLENDER_TAR} -C /opt \
+ && rm -f /tmp/${BLENDER_TAR}
+
+# Set up environment for Blender bundled libraries
+ENV BLENDER_PATH="/opt/blender-4.2.0-linux-x64"
+ENV LD_LIBRARY_PATH="${BLENDER_PATH}/lib:${LD_LIBRARY_PATH}"
+ENV BLENDER_SYSTEM_SCRIPTS="${BLENDER_PATH}/4.2/scripts"
+ENV BLENDER_SYSTEM_DATAFILES="${BLENDER_PATH}/4.2/datafiles"
+ENV PATH="${BLENDER_PATH}:${PATH}"
+
+# Create directories
+RUN mkdir -p /app /workspace /socks /app/logs && \
+    chmod 755 /workspace /socks /app/logs
+
+# Create and configure Python virtual environment
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:${BLENDER_PATH}:${PATH}"
+
+# Install Python packages for communication
+RUN python3 -m pip install --no-cache-dir --upgrade pip
+COPY server/requirements.txt /tmp/requirements.txt
+RUN python3 -m pip install --no-cache-dir -r /tmp/requirements.txt
+
+# Install gRPC packages in Blender's Python environment
+RUN ${BLENDER_PATH}/4.2/python/bin/python3.11 -m ensurepip --upgrade && \
+    ${BLENDER_PATH}/4.2/python/bin/python3.11 -m pip install --no-cache-dir --upgrade pip && \
+    ${BLENDER_PATH}/4.2/python/bin/python3.11 -m pip install --no-cache-dir -r /tmp/requirements.txt
+
+# Copy server code
+COPY server/main.py /app/
+COPY server/exec_ops.py /app/
+COPY server/file_ops.py /app/
+COPY server/utils.py /app/
+COPY server/meshwork_pb2.py /app/
+COPY server/meshwork_pb2_grpc.py /app/
+COPY server/healthcheck.py /usr/local/bin/healthcheck.py
+
+# Add /app to Blender's Python path using .pth file
+RUN echo "/app" > ${BLENDER_PATH}/4.2/python/lib/python3.11/site-packages/meshwork.pth
+
+WORKDIR /app
+
+# Set environment variables
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+
+# GPU detection entrypoint
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh /usr/local/bin/healthcheck.py
+
+# Health check using unified gRPC ping
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=30s \
+    CMD SERVICE_NAME=blender SERVICE_PORT=50051 python3 /usr/local/bin/healthcheck.py || exit 1
+
+# Expose gRPC port only
+EXPOSE 50051
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["blender", "--background", "--python", "main.py"]

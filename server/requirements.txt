@@ -1,0 +1,26 @@
+# server/requirements.txt
+# gRPC for service communication
+grpcio>=1.50.0
+grpcio-tools>=1.50.0
+
+# HTTP server
+fastapi>=0.95.0
+uvicorn>=0.20.0
+
+# Async support
+asyncio-mqtt>=0.13.0
+aiofiles>=0.8.0
+
+# Compression and file handling
+lz4>=4.0.0
+
+# Logging and utilities
+loguru>=0.7.0
+pydantic>=1.10.0
+
+# Scientific computing and image processing
+numpy>=1.21.0
+pillow>=9.0.0
+
+# MessagePack for binary serialization
+msgpack>=1.0.4

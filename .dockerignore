@@ -1,0 +1,43 @@
+# Exclude runtime files and directories
+.runtime/
+.runtime/*
+
+# Exclude development and build artifacts
+.git/
+.gitignore
+.vscode/
+.idea/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+.tox/
+
+# Exclude documentation and examples
+README.md
+*.md
+docs/
+examples/
+
+# Exclude temporary files
+*.log
+*.tmp
+*.swp
+*.swo
+*~
+
+# Exclude Docker-related files (except Dockerfiles)
+docker-compose.yml
+docker-compose.override.yml
+.env
+
+# Exclude build artifacts
+build/
+dist/
+*.egg-info/
+
+# Exclude OS-specific files
+.DS_Store
+Thumbs.db

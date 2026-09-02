@@ -28,7 +28,7 @@ The photographs are in the `images/` directory.
 | Source | Natowi photogrammetry datasets |
 | URL | https://github.com/natowi/dataset_flowerpot |
 | License | CC-BY-SA 4.0 (Creative Commons Attribution-ShareAlike 4.0 International) |
-| Images | 245 photographs (Meizu M1 Note); the paper uses a subset of 81 |
+| Images | 81 photographs (Meizu M1 Note) |
 | Subject | Decorative flowerpot standing on a table, with a printed scale bar in the scene |
 | Author | Natowi |
 | Used for | Supporting-plane detection and background removal (Example 2) |
@@ -36,7 +36,7 @@ The photographs are in the `images/` directory.
 ```bash
 git clone https://github.com/natowi/dataset_flowerpot.git
 ```
-The `full_dataset/` directory contains all 245 images.
+The `full_dataset/` directory contains the 81 images used in the paper.
 
 **Attribution**: The dataset_flowerpot by Natowi, licensed under CC-BY-SA 4.0. This dataset uses the "Scale for Small-Object Photogrammetry" by Samantha Porter.
 
@@ -47,7 +47,7 @@ The `full_dataset/` directory contains all 245 images.
 | Source | MicroPasts crowdsourcing platform |
 | URL | https://github.com/MicroPasts/socketed-axe-version2 |
 | License | CC-BY |
-| Images | 54 photographs in `photos/`, with crowd-sourced masks in `masks/` |
+| Images | 54 photographs in `photos/` (`IMG_8835`-`IMG_8888`, one capture session), with crowd-sourced masks in `masks/`; the paper splits them into subsets A (`8835`-`8860`) and B (`8861`-`8888`) |
 | Subject | Late Bronze / Early Iron Age socketed axe head with the blade wedged into the socket, found on the Isle of Wight |
 | Reference data | `models/`: textured meshes (100k and 300k faces) and the dense point cloud produced with PhotoScan Pro 1.1.6; `other/`: camera positions and alignment markers |
 | Used for | Multi-scan registration, merging and end-to-end assembly (Example 3); the PhotoScan model serves as an independent reference for `scripts/eval/compare_reference.py` |

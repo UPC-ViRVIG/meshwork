@@ -20,7 +20,7 @@ See [DATASETS.md](DATASETS.md) for sources, licenses and attribution.
 | Dataset | Download | Photographs |
 |---------|----------|-------------|
 | Alexander the Great | `git clone https://github.com/BritishMuseumDH/alexanderTheGreat.git` | `alexanderTheGreat/images/` (57) |
-| Flowerpot | `git clone https://github.com/natowi/dataset_flowerpot.git` | `dataset_flowerpot/full_dataset/` (245; the paper uses 81 of them) |
+| Flowerpot | `git clone https://github.com/natowi/dataset_flowerpot.git` | `dataset_flowerpot/full_dataset/` (81) |
 | Socketed axe | `git clone https://github.com/MicroPasts/socketed-axe-version2.git` | `socketed-axe-version2/photos/` (54); reference model in `models/` |
 
 ## GUI workflow
@@ -71,7 +71,7 @@ The UI event-loop latency during processing is logged to `~/.meshwork/logs/ui_la
 
 **Objective**: automated supporting-plane detection and cleaning, and a comparison of two mesh generation strategies.
 
-1. Reconstruction: photographs from `dataset_flowerpot/full_dataset/` (TODO(paper): list the 81 images used), Quality `Balanced`, Output `Point Cloud`.
+1. Reconstruction: all 81 photographs of `dataset_flowerpot/full_dataset/`, Quality `Balanced`, Output `Point Cloud`.
 2. Import; select the imported point cloud (`dense_points`); Analyze Plane > Apply. The object is rotated upright and Margin is filled in with the recommended value.
 3. Remove Plane with Method `DBSCAN` > Apply. `2.cleaned_m<margin>` appears without the table and the supporting geometry.
 4. Select the cleaned object; Generate Mesh (Depth 9) > Apply. This is method A: cleaned point cloud + Poisson reconstruction (vertex-coloured mesh).
@@ -92,7 +92,16 @@ python scripts/eval/ablation_plane.py <output folder> --gt-background <table.ply
 
 **Objective**: the complete assisted multi-scan pipeline (plane removal, registration with scale estimation, merging, meshing) on a real archaeological artifact.
 
-1. Reconstruct each capture session separately, each into its own output folder: Quality `Balanced`, Output `Point Cloud`. TODO(paper): list the subsets of `photos/` used for scan A and scan B.
+1. The 54 photographs (`IMG_8835.JPG` to `IMG_8888.JPG`) come from a single capture session. Split them into two disjoint subsets and reconstruct each into its own output folder (Quality `Balanced`, Output `Point Cloud`): subset A = `IMG_8835`-`IMG_8860` (26 images), subset B = `IMG_8861`-`IMG_8888` (28 images).
+
+   ```bash
+   cd socketed-axe-version2
+   mkdir -p scanA scanB
+   for n in $(seq 8835 8860); do cp photos/IMG_$n.JPG scanA/; done
+   for n in $(seq 8861 8888); do cp photos/IMG_$n.JPG scanB/; done
+   ```
+
+   The two partial reconstructions therefore have independent, slightly different scales and reference frames, which is the situation the registration stage is designed for.
 2. For each imported scan: Analyze Plane > Apply, then Remove Plane (`DBSCAN`) > Apply. Both cleaned scans are now in canonical frames (table at z = 0, centroid at the origin).
 3. Coarse alignment: the cleaned scan listed first in the Scene panel (scan A, imported first) is the one that will move. Select it and rotate/translate it with the Transform panel until it roughly overlaps scan B.
 4. Select both cleaned scans; Align Clouds > Apply. Scan A is registered onto scan B. `3.alignment_params.yaml` in scan A's folder contains the fitness, the inlier RMSE, the initialization that won (RANSAC or identity), the per-level records and the estimated scale factor.

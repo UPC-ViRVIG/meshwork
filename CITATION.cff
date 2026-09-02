@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: "If you use MeshWork in your research, please cite it as below."
+title: "MeshWork: A Python Framework for Assisted Geometry Processing in 3D Reconstruction Workflows"
+type: software
+version: 1.0.0
+date-released: 2026-09-02
+license: MIT
+repository-code: "https://github.com/UPC-ViRVIG/meshwork"
+authors:
+  - family-names: Wang
+    given-names: Chunjie
+    email: chunjie.wang@upc.edu
+    affiliation: "ViRVIG, Universitat Politecnica de Catalunya - BarcelonaTech (UPC)"
+  - family-names: Andujar
+    given-names: Carlos
+    affiliation: "ViRVIG, Universitat Politecnica de Catalunya - BarcelonaTech (UPC)"
+  - family-names: Chica
+    given-names: Antonio
+    affiliation: "ViRVIG, Universitat Politecnica de Catalunya - BarcelonaTech (UPC)"
+keywords:
+  - 3D reconstruction
+  - photogrammetry
+  - point cloud processing
+  - Docker
+  - event-driven architecture

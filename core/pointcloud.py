@@ -6,6 +6,8 @@ from datetime import datetime
 from PySide6.QtCore import QObject
 from core.coredata import get_scene_manager
 import asyncio
+import json
+import time
 import numpy as np
 import open3d as o3d
 import yaml
@@ -37,6 +39,28 @@ MESH_CONFIG = {
     'normal_search_ratio': 100,
 }
 
+ALIGN_CONFIG = {
+    'voxel_divisor': 200,
+    'level_factors': [1.0, 0.6, 0.3],
+    'icp_max_iteration': 50,
+    'estimate_scale': True,
+    'scale_candidates': [0.95, 0.97, 0.99, 1.0, 1.01, 1.03, 1.05],
+    'scale_test_iteration': 3,
+    'scale_clip': [0.8, 1.5],
+}
+
+METRICS_FILENAME = "stage_metrics.jsonl"
+
+
+def _json_default(value):
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, (np.floating, np.integer, np.bool_)):
+        return value.item()
+    if isinstance(value, Path):
+        return str(value)
+    return str(value)
+
 class PointcloudAPI(QObject, Executor):
 
     def __init__(self, signal_router=None, worker=None, parent=None):
@@ -54,6 +78,8 @@ class PointcloudAPI(QObject, Executor):
         self.logger.info("PointCloud API initialized")
 
     def _setup_signal_handlers(self):
+        if self.signal_router is None:
+            return
         self.signal_router.subscribe('pointcloud.do_analyze_plane', self.do_analyze_plane, 'PointcloudAPI')
         self.signal_router.subscribe('pointcloud.do_remove_plane', self.do_remove_plane, 'PointcloudAPI')
         self.signal_router.subscribe('pointcloud.do_remove_plane_preview', self.do_remove_plane_preview, 'PointcloudAPI')
@@ -99,6 +125,47 @@ class PointcloudAPI(QObject, Executor):
         except (FileNotFoundError, yaml.YAMLError) as e:
             self.logger.error(f"Failed to load YAML: {e}")
             raise
+
+    def _load_yaml_or_empty(self, path: Path) -> dict:
+        try:
+            data = self._load_yaml(path)
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _record_stage_metrics(self, source_dir: Path, stage: str, elapsed_s: float,
+                              metrics: dict, **extra) -> Optional[Path]:
+        record = {
+            'timestamp': datetime.now().isoformat(timespec='seconds'),
+            'stage': stage,
+            'elapsed_s': round(float(elapsed_s), 3),
+        }
+        record.update(extra)
+        record['metrics'] = metrics
+        path = Path(source_dir) / METRICS_FILENAME
+        try:
+            with open(path, 'a') as f:
+                f.write(json.dumps(record, default=_json_default) + "\n")
+        except IOError as e:
+            self.logger.warning(f"Failed to record stage metrics: {e}")
+            return None
+        self.logger.info(f"Stage metrics recorded: {stage} elapsed={elapsed_s:.2f}s -> {path.name}")
+        return path
+
+    def _estimate_point_spacing(self, pcd, n_samples: int = 20000) -> float:
+        n = len(pcd.points)
+        if n < 2:
+            return float('nan')
+        tree = o3d.geometry.KDTreeFlann(pcd)
+        rng = np.random.default_rng(0)
+        idx = rng.choice(n, size=min(n_samples, n), replace=False)
+        points = np.asarray(pcd.points)
+        dists = np.full(len(idx), np.nan)
+        for i, k in enumerate(idx):
+            _, _, d2 = tree.search_knn_vector_3d(points[k], 2)
+            if len(d2) > 1:
+                dists[i] = np.sqrt(d2[1])
+        return float(np.nanmean(dists))
 
     def _find_stage1_yaml(self, source_dir: Path) -> Optional[Path]:
         yaml_path = source_dir / "1.stage1_params.yaml"
@@ -247,14 +314,14 @@ class PointcloudAPI(QObject, Executor):
             images_txt = source_dir / "images.txt"
             dense_ply = source_dir / "dense_points.ply"
 
+            gravity_override = None
             if not images_txt.exists():
-                self.logger.error(f"Missing images.txt in {source_dir}")
-                self.signal_router.emit('pointcloud.done_analyze_plane', {
-                    'success': False,
-                    'yaml_path': '',
-                    'error': 'Missing images.txt'
-                })
-                return
+                rot_matrix = self._euler_to_matrix(np.array(obj.rotation, dtype=float))
+                gravity_override = rot_matrix.T @ np.array([0.0, 0.0, -1.0])
+                self.logger.warning(
+                    f"images.txt not found in {source_dir}; using the scene vertical axis as gravity "
+                    f"(local direction {gravity_override.tolist()})"
+                )
 
             if not dense_ply.exists():
                 self.logger.error(f"Missing dense_points.ply in {source_dir}")
@@ -271,15 +338,31 @@ class PointcloudAPI(QObject, Executor):
 
             try:
                 loop = asyncio.get_event_loop()
+                t_start = time.perf_counter()
                 result, gravity_dir = await loop.run_in_executor(
                     None,
                     self._process_analyze_sync,
                     source_dir,
-                    output_yaml
+                    output_yaml,
+                    gravity_override
                 )
+                elapsed = time.perf_counter() - t_start
 
                 if result and gravity_dir is not None:
                     self.logger.info(f"Plane analysis complete for {object_name}")
+                    analysis = self._load_yaml_or_empty(output_yaml)
+                    self._record_stage_metrics(source_dir, 'analyze_plane', elapsed, {
+                        'plane_method': analysis.get('plane_method'),
+                        'gravity_source': analysis.get('gravity_source'),
+                        'n_cameras': analysis.get('n_cameras'),
+                        'plane_model': analysis.get('plane_model'),
+                        'plane_gravity_alignment': analysis.get('plane_gravity_alignment'),
+                        'recommended_margin': analysis.get('recommended_margin'),
+                        'retention_at_recommended_margin': analysis.get('retention_at_recommended_margin'),
+                        'n_points': analysis.get('n_points_original'),
+                        'bbox_diagonal': analysis.get('bbox_diagonal'),
+                        'mean_point_spacing': analysis.get('mean_point_spacing'),
+                    }, object=object_name, output=output_yaml.name)
 
                     new_rotation = self._compute_alignment_rotation(gravity_dir)
 
@@ -334,10 +417,6 @@ class PointcloudAPI(QObject, Executor):
                 })
                 return
 
-            cached_location = obj.location.copy()
-            cached_rotation = obj.rotation.copy()
-            cached_scale = obj.scale.copy()
-
             source_dir = Path(obj.source_directory)
             if not source_dir.exists():
                 self.logger.error(f"Source directory not found: {source_dir}")
@@ -372,6 +451,7 @@ class PointcloudAPI(QObject, Executor):
 
             try:
                 loop = asyncio.get_event_loop()
+                t_start = time.perf_counter()
                 result = await loop.run_in_executor(
                     None,
                     self._process_remove_sync,
@@ -382,15 +462,28 @@ class PointcloudAPI(QObject, Executor):
                     output_ply,
                     output_yaml
                 )
+                elapsed = time.perf_counter() - t_start
 
                 if result:
                     self.logger.info(f"Plane removal complete: {output_ply}")
+                    removal = self._load_yaml_or_empty(output_yaml)
+                    self._record_stage_metrics(source_dir, 'remove_plane', elapsed, {
+                        'margin': float(margin),
+                        'method': method,
+                        'plane_params_file': removal.get('plane_params_file'),
+                        'input_points': removal.get('input_points'),
+                        'output_points': removal.get('output_points'),
+                        'retention_rate': removal.get('retention_rate'),
+                    }, object=object_name, output=output_ply.name)
+                    self.logger.info(
+                        f"Output cloud is in canonical frame; applying identity transform to {obj_name}"
+                    )
                     self.pending_import = {
                         'operation': 'remove',
                         'obj_name': obj_name,
-                        'location': cached_location,
-                        'rotation': cached_rotation,
-                        'scale': cached_scale,
+                        'location': np.array([0.0, 0.0, 0.0]),
+                        'rotation': np.array([0.0, 0.0, 0.0]),
+                        'scale': np.array([1.0, 1.0, 1.0]),
                         'import_status': 'pending'
                     }
                     self.signal_router.emit('project.do_import', {
@@ -500,6 +593,7 @@ class PointcloudAPI(QObject, Executor):
 
             try:
                 loop = asyncio.get_event_loop()
+                t_start = time.perf_counter()
                 result = await loop.run_in_executor(
                     None,
                     self._compute_alignment,
@@ -508,6 +602,7 @@ class PointcloudAPI(QObject, Executor):
                     source_transform,
                     target_transform
                 )
+                elapsed = time.perf_counter() - t_start
 
                 if result is None:
                     self.logger.error("Alignment computation failed")
@@ -525,6 +620,7 @@ class PointcloudAPI(QObject, Executor):
 
                 self.logger.info(f"Alignment complete: fitness={fitness:.4f}, rmse={rmse:.6f}")
 
+                registration = result.get('registration', {})
                 yaml_path = source_dir / "3.alignment_params.yaml"
                 try:
                     self._save_yaml(yaml_path, {
@@ -533,6 +629,8 @@ class PointcloudAPI(QObject, Executor):
                         'moved_object': source_object,
                         'fitness': float(fitness),
                         'rmse': float(rmse),
+                        'elapsed_s': round(elapsed, 3),
+                        'registration': registration,
                         'new_transform': {
                             'location': new_location.tolist(),
                             'rotation': new_rotation.tolist(),
@@ -541,6 +639,16 @@ class PointcloudAPI(QObject, Executor):
                     })
                 except IOError as e:
                     self.logger.warning(f"Failed to save alignment params: {e}")
+
+                self._record_stage_metrics(source_dir, 'align_clouds', elapsed, {
+                    'fitness': float(fitness),
+                    'rmse': float(rmse),
+                    'init_method': registration.get('init_method'),
+                    'voxel_size': registration.get('voxel_size'),
+                    'estimate_scale': registration.get('estimate_scale'),
+                    'cumulative_scale': registration.get('cumulative_scale'),
+                    'levels': registration.get('levels'),
+                }, object=source_object, target=target_object, output=yaml_path.name)
 
                 self.signal_router.emit('transform.apply_transform', {
                     'object_name': source_object,
@@ -632,6 +740,7 @@ class PointcloudAPI(QObject, Executor):
             self.logger.info(f"Starting merge: {source_object} + {target_object}")
 
             loop = asyncio.get_event_loop()
+            t_start = time.perf_counter()
             result = await loop.run_in_executor(
                 None,
                 self._process_merge_sync,
@@ -645,6 +754,7 @@ class PointcloudAPI(QObject, Executor):
                 source_transform,
                 target_transform
             )
+            elapsed = time.perf_counter() - t_start
 
             if result is None:
                 self.logger.error("Merge processing failed")
@@ -655,6 +765,13 @@ class PointcloudAPI(QObject, Executor):
                 return
 
             self.logger.info(f"Merge complete: {result['ply_path']}")
+            merge_params = self._load_yaml_or_empty(Path(result['params_path']))
+            merge_stats = merge_params.get('statistics', {})
+            self._record_stage_metrics(output_dir, 'merge_clouds', elapsed, {
+                'cleaning_params': cleaning_params,
+                'input': merge_stats.get('input'),
+                'output': merge_stats.get('output'),
+            }, object=source_object, target=target_object, output=Path(result['ply_path']).name)
 
             self.pending_import = {
                 'operation': 'merge',
@@ -716,6 +833,7 @@ class PointcloudAPI(QObject, Executor):
 
             try:
                 loop = asyncio.get_event_loop()
+                t_start = time.perf_counter()
                 result = await loop.run_in_executor(
                     None,
                     self._process_mesh_sync,
@@ -724,9 +842,15 @@ class PointcloudAPI(QObject, Executor):
                     output_ply,
                     output_yml
                 )
+                elapsed = time.perf_counter() - t_start
 
                 if result:
                     self.logger.info(f"Mesh generation complete: {output_ply}")
+                    mesh_info = self._load_yaml_or_empty(output_yml)
+                    self._record_stage_metrics(source_dir, 'generate_mesh', elapsed, {
+                        'parameters': mesh_info.get('parameters'),
+                        'statistics': mesh_info.get('statistics'),
+                    }, object=object_name, output=output_ply.name)
                     self.pending_import = {
                         'operation': 'mesh',
                         'original_object': object_name,
@@ -869,17 +993,20 @@ class PointcloudAPI(QObject, Executor):
                 'error': error
             })
 
-    def _process_analyze_sync(self, source_dir: Path, output_yaml: Path) -> bool:
+    def _process_analyze_sync(self, source_dir: Path, output_yaml: Path,
+                              gravity_override: Optional[np.ndarray] = None) -> tuple:
         images_txt = source_dir / "images.txt"
         dense_ply = source_dir / "dense_points.ply"
 
         cameras = []
-        try:
-            with open(images_txt, 'r') as f:
-                lines = f.readlines()
-        except IOError:
-            self.logger.error(f"Failed to read images.txt: {images_txt}")
-            return False, None
+        lines = []
+        if gravity_override is None:
+            try:
+                with open(images_txt, 'r') as f:
+                    lines = f.readlines()
+            except IOError:
+                self.logger.error(f"Failed to read images.txt: {images_txt}")
+                return False, None
 
         i = 0
         while i < len(lines):
@@ -900,7 +1027,7 @@ class PointcloudAPI(QObject, Executor):
             else:
                 i += 1
 
-        if len(cameras) == 0:
+        if len(cameras) == 0 and gravity_override is None:
             self.logger.error(f"No valid camera entries found in {images_txt}")
             return False, None
 
@@ -913,18 +1040,25 @@ class PointcloudAPI(QObject, Executor):
             ])
             return R
 
-        camera_up_vectors = []
-        for cam in cameras:
-            R = quaternion_to_rotation_matrix(cam['quat'])
-            camera_y = R[1, :]
-            camera_up_vectors.append(-camera_y)
+        if gravity_override is not None:
+            gravity_direction = np.asarray(gravity_override, dtype=float)
+            gravity_direction = gravity_direction / np.linalg.norm(gravity_direction)
+            gravity_source = 'scene_vertical_axis'
+            self.logger.info(f"Using provided gravity_direction={gravity_direction.tolist()}")
+        else:
+            camera_up_vectors = []
+            for cam in cameras:
+                R = quaternion_to_rotation_matrix(cam['quat'])
+                camera_y = R[1, :]
+                camera_up_vectors.append(-camera_y)
 
-        camera_up_vectors = np.array(camera_up_vectors)
-        mean_up = camera_up_vectors.mean(axis=0)
-        mean_up_normalized = mean_up / np.linalg.norm(mean_up)
-        gravity_direction = -mean_up_normalized
+            camera_up_vectors = np.array(camera_up_vectors)
+            mean_up = camera_up_vectors.mean(axis=0)
+            mean_up_normalized = mean_up / np.linalg.norm(mean_up)
+            gravity_direction = -mean_up_normalized
+            gravity_source = 'camera_poses'
 
-        self.logger.info(f"Parsed {len(cameras)} cameras, gravity_direction={gravity_direction.tolist()}")
+            self.logger.info(f"Parsed {len(cameras)} cameras, gravity_direction={gravity_direction.tolist()}")
 
         pcd = o3d.io.read_point_cloud(str(dense_ply))
         if len(pcd.points) == 0:
@@ -1234,15 +1368,23 @@ class PointcloudAPI(QObject, Executor):
                 ])
         self.logger.info(f"Enriched candidates CSV written: {enriched_path}")
 
+        mean_point_spacing = self._estimate_point_spacing(pcd)
+        plane_gravity_alignment = float(abs(np.dot(pm_n_arr / pm_n_norm, g_norm)))
+
         result = {
             'version': '1.2',
             'plane_method': plane_method,
             'plane_model': plane_model_final,
             'gravity_direction': gravity_direction.tolist(),
+            'gravity_source': gravity_source,
+            'n_cameras': int(len(cameras)),
+            'plane_gravity_alignment': plane_gravity_alignment,
             'recommended_margin': float(best_margin),
+            'retention_at_recommended_margin': retention_at_best,
             'alternative_margins': alternatives,
             'margin_test_results': margin_scores,
             'n_points_original': int(len(pcd.points)),
+            'mean_point_spacing': mean_point_spacing,
             'bbox_diagonal': float(bbox_diag)
         }
 
@@ -1331,8 +1473,200 @@ class PointcloudAPI(QObject, Executor):
             f"({100*n_final/n_original:.1f}% of original)"
         )
 
-        o3d.io.write_point_cloud(str(output_ply), pcd_clean)
-        self.logger.info(f"Written cleaned cloud: {output_ply.name} ({n_final} points)")
+        self.logger.info("=" * 60)
+        self.logger.info("CANONICAL FRAME TRANSFORM")
+        self.logger.info("=" * 60)
+
+        n_hat = np.array([a, b, c]) / normal_norm
+        self.logger.info(
+            f"Plane normal (unit): [{n_hat[0]:.6f}, {n_hat[1]:.6f}, {n_hat[2]:.6f}]"
+        )
+
+        pts_clean = np.asarray(pcd_clean.points)
+
+        signed_dist_clean = (pts_clean @ np.array([a, b, c]) + d) / normal_norm
+        self.logger.info(
+            f"Signed distances (clean pts): min={signed_dist_clean.min():.4f}, "
+            f"max={signed_dist_clean.max():.4f}, mean={signed_dist_clean.mean():.4f}"
+        )
+
+        mean_dist = signed_dist_clean.mean()
+        if mean_dist < 0:
+            self.logger.warning(
+                f"Object centroid is on negative side of plane (mean_dist={mean_dist:.4f}); "
+                f"flipping normal direction"
+            )
+            n_hat = -n_hat
+            signed_dist_clean = -signed_dist_clean
+
+        abs_dots = np.abs(np.array([n_hat[0], n_hat[1], n_hat[2]]))
+        fallback_idx = int(np.argmin(abs_dots))
+        fallback_axes = [np.array([1.0, 0.0, 0.0]),
+                         np.array([0.0, 1.0, 0.0]),
+                         np.array([0.0, 0.0, 1.0])]
+        u_raw = fallback_axes[fallback_idx] - np.dot(fallback_axes[fallback_idx], n_hat) * n_hat
+        u_tmp = u_raw / np.linalg.norm(u_raw)
+        v_tmp = np.cross(n_hat, u_tmp)
+
+        x_tmp = pts_clean @ u_tmp
+        y_tmp = pts_clean @ v_tmp
+        z_c = signed_dist_clean
+
+        YAW_ISOTROPY_THRESHOLD = 0.85
+        GRID_CELLS = 64
+        PCA_Z_LOW_PCT = 20.0
+        PCA_Z_HIGH_PCT = 70.0
+        yaw_aligned = False
+        yaw_angle_deg = 0.0
+        eigenvalue_ratio = 1.0
+
+        z_low = float(np.percentile(z_c, PCA_Z_LOW_PCT))
+        z_high = float(np.percentile(z_c, PCA_Z_HIGH_PCT))
+        band_mask = (z_c >= z_low) & (z_c <= z_high)
+        n_band = int(band_mask.sum())
+        self.logger.info(
+            f"PCA height band: pct=[{PCA_Z_LOW_PCT},{PCA_Z_HIGH_PCT}], "
+            f"z=[{z_low:.4f},{z_high:.4f}], n_band={n_band}/{len(z_c)}"
+        )
+
+        if n_band >= 10:
+            x_pca = x_tmp[band_mask]
+            y_pca = y_tmp[band_mask]
+        else:
+            x_pca = x_tmp
+            y_pca = y_tmp
+            self.logger.warning(f"PCA height band too sparse ({n_band} pts), using full footprint")
+
+        x_pca_c = x_pca - x_pca.mean()
+        y_pca_c = y_pca - y_pca.mean()
+        x_range = x_pca_c.max() - x_pca_c.min()
+        y_range = y_pca_c.max() - y_pca_c.min()
+        max_range = max(x_range, y_range)
+
+        if max_range > 1e-6:
+            cell_size = max_range / GRID_CELLS
+            ix = np.clip(((x_pca_c - x_pca_c.min()) / cell_size).astype(int), 0, GRID_CELLS - 1)
+            iy = np.clip(((y_pca_c - y_pca_c.min()) / cell_size).astype(int), 0, GRID_CELLS - 1)
+            occupied = np.unique(np.stack([ix, iy], axis=1), axis=0).astype(float)
+            if len(occupied) >= 3:
+                gc_x = occupied[:, 0] - occupied[:, 0].mean()
+                gc_y = occupied[:, 1] - occupied[:, 1].mean()
+                cov = np.cov(gc_x, gc_y)
+                eigvals, eigvecs = np.linalg.eigh(cov)
+                order = np.argsort(eigvals)[::-1]
+                eigvals = eigvals[order]
+                eigvecs = eigvecs[:, order]
+                if eigvals[0] > 1e-10:
+                    eigenvalue_ratio = float(eigvals[1] / eigvals[0])
+                self.logger.info(
+                    f"Footprint PCA: eigenvalues=[{eigvals[0]:.6f},{eigvals[1]:.6f}], "
+                    f"ratio={eigenvalue_ratio:.4f}, threshold={YAW_ISOTROPY_THRESHOLD}"
+                )
+                if eigenvalue_ratio <= YAW_ISOTROPY_THRESHOLD:
+                    e = eigvecs[:, 0]
+                    proj = x_pca_c * e[0] + y_pca_c * e[1]
+                    skewness = float(np.mean(proj ** 3) / (np.std(proj) ** 3 + 1e-12))
+                    if skewness < 0:
+                        e = -e
+                    cos_t = float(e[0])
+                    sin_t = float(e[1])
+                    u = cos_t * u_tmp + sin_t * v_tmp
+                    u = u / np.linalg.norm(u)
+                    v = np.cross(n_hat, u)
+                    yaw_angle_deg = float(np.degrees(np.arctan2(sin_t, cos_t)))
+                    yaw_aligned = True
+                    self.logger.info(
+                        f"Yaw alignment applied: angle={yaw_angle_deg:.3f} deg, skewness={skewness:.4f}"
+                    )
+                else:
+                    u = u_tmp
+                    v = v_tmp
+                    self.logger.info(
+                        f"Yaw alignment skipped: near-isotropic footprint (ratio={eigenvalue_ratio:.4f})"
+                    )
+            else:
+                u = u_tmp
+                v = v_tmp
+                self.logger.warning(
+                    f"Yaw alignment skipped: insufficient occupied cells ({len(occupied)})"
+                )
+        else:
+            u = u_tmp
+            v = v_tmp
+            self.logger.warning("Yaw alignment skipped: degenerate footprint extent")
+
+        self.logger.info(
+            f"Canonical basis: u=[{u[0]:.6f},{u[1]:.6f},{u[2]:.6f}] "
+            f"v=[{v[0]:.6f},{v[1]:.6f},{v[2]:.6f}] "
+            f"n_hat=[{n_hat[0]:.6f},{n_hat[1]:.6f},{n_hat[2]:.6f}]"
+        )
+
+        x_c = pts_clean @ u
+        y_c = pts_clean @ v
+
+        centroid_original = pts_clean.mean(axis=0)
+        centroid_x = float(x_c.mean())
+        centroid_y = float(y_c.mean())
+        centroid_z_above_plane = float(z_c.mean())
+        self.logger.info(
+            f"Object centroid (original coords): "
+            f"[{centroid_original[0]:.4f}, {centroid_original[1]:.4f}, {centroid_original[2]:.4f}]"
+        )
+        self.logger.info(
+            f"Object centroid (canonical pre-center): "
+            f"x={centroid_x:.4f}, y={centroid_y:.4f}, z={centroid_z_above_plane:.4f}"
+        )
+        self.logger.info(
+            f"centroid_z_above_plane (signed dist centroid to table): {centroid_z_above_plane:.6f}"
+        )
+
+        pts_canon = np.column_stack([
+            x_c - centroid_x,
+            y_c - centroid_y,
+            z_c - centroid_z_above_plane
+        ])
+
+        bbox_canon_min = pts_canon.min(axis=0)
+        bbox_canon_max = pts_canon.max(axis=0)
+        bbox_canon_size = bbox_canon_max - bbox_canon_min
+        self.logger.info(
+            f"Canonical bbox: "
+            f"min=[{bbox_canon_min[0]:.4f},{bbox_canon_min[1]:.4f},{bbox_canon_min[2]:.4f}] "
+            f"max=[{bbox_canon_max[0]:.4f},{bbox_canon_max[1]:.4f},{bbox_canon_max[2]:.4f}] "
+            f"size=[{bbox_canon_size[0]:.4f},{bbox_canon_size[1]:.4f},{bbox_canon_size[2]:.4f}]"
+        )
+        self.logger.info(
+            f"Canonical centroid verification: "
+            f"[{pts_canon[:,0].mean():.6f}, {pts_canon[:,1].mean():.6f}, {pts_canon[:,2].mean():.6f}]"
+            f" (expected [0,0,0])"
+        )
+
+        R = np.stack([u, v, n_hat], axis=0)
+        self.logger.info(f"Rotation matrix orthogonality check: R @ R.T = ")
+        rrt = R @ R.T
+        for i in range(3):
+            self.logger.info(
+                f"  [{rrt[i,0]:.6f}, {rrt[i,1]:.6f}, {rrt[i,2]:.6f}]"
+            )
+
+        pcd_canon = o3d.geometry.PointCloud()
+        pcd_canon.points = o3d.utility.Vector3dVector(pts_canon)
+
+        if pcd_clean.has_colors():
+            pcd_canon.colors = pcd_clean.colors
+            self.logger.info("Copied colors to canonical cloud")
+
+        if pcd_clean.has_normals():
+            normals_orig = np.asarray(pcd_clean.normals)
+            normals_canon = normals_orig @ R.T
+            pcd_canon.normals = o3d.utility.Vector3dVector(normals_canon)
+            self.logger.info("Transformed normals to canonical frame")
+
+        o3d.io.write_point_cloud(str(output_ply), pcd_canon)
+        self.logger.info(
+            f"Written canonical cloud: {output_ply.name} ({n_final} points, "
+            f"table at z={-centroid_z_above_plane:.4f}, centroid at origin)"
+        )
 
         params = {
             'input_file': input_ply.name,
@@ -1341,7 +1675,24 @@ class PointcloudAPI(QObject, Executor):
             'plane_params_file': stage1_yaml.name if stage1_yaml else None,
             'input_points': n_original,
             'output_points': n_final,
-            'retention_rate': float(n_final / n_original)
+            'retention_rate': float(n_final / n_original),
+            'canonical_transform': {
+                'n_hat': n_hat.tolist(),
+                'u': u.tolist(),
+                'v': v.tolist(),
+                'centroid_original': centroid_original.tolist(),
+                'centroid_z_above_plane': float(centroid_z_above_plane),
+                'centroid_x_in_plane': float(centroid_x),
+                'centroid_y_in_plane': float(centroid_y),
+                'yaw_aligned': yaw_aligned,
+                'yaw_angle_deg': yaw_angle_deg,
+                'footprint_eigenvalue_ratio': eigenvalue_ratio,
+                'bbox_canonical': {
+                    'min': bbox_canon_min.tolist(),
+                    'max': bbox_canon_max.tolist(),
+                    'size': bbox_canon_size.tolist()
+                }
+            }
         }
 
         try:
@@ -1349,6 +1700,10 @@ class PointcloudAPI(QObject, Executor):
         except IOError:
             self.logger.error(f"Failed to save removal YAML: {output_yaml}")
             return False
+
+        self.logger.info("=" * 60)
+        self.logger.info("CANONICAL FRAME TRANSFORM COMPLETE")
+        self.logger.info("=" * 60)
 
         return True
 
@@ -1389,6 +1744,19 @@ class PointcloudAPI(QObject, Executor):
 
         cluster_sizes.sort(key=lambda x: x[1], reverse=True)
         main_label = cluster_sizes[0][0]
+        main_size = cluster_sizes[0][1]
+
+        self.logger.info(
+            f"DBSCAN: eps={eps:.4f}, min_points={min_points}, "
+            f"n_clusters={n_clusters}, noise_pts={int((labels == -1).sum())}, "
+            f"keeping label={main_label} size={main_size}/{n_down}"
+        )
+        if len(cluster_sizes) > 1:
+            discarded_sizes = [s for _, s in cluster_sizes[1:]]
+            self.logger.info(
+                f"DBSCAN: discarding {len(cluster_sizes) - 1} smaller cluster(s), "
+                f"sizes={discarded_sizes[:8]}"
+            )
 
         main_mask_down = (labels == main_label)
         main_points_down = points_down[main_mask_down]
@@ -1405,7 +1773,25 @@ class PointcloudAPI(QObject, Executor):
             if k > 0:
                 keep_mask[j] = True
 
-        pcd_clean = pcd.select_by_index(np.where(keep_mask)[0])
+        n_kept = int(keep_mask.sum())
+        self.logger.info(
+            f"DBSCAN radius projection: {n_kept}/{n_original} original pts retained "
+            f"(radius={search_radius:.4f})"
+        )
+
+        pcd_after_proj = pcd.select_by_index(np.where(keep_mask)[0])
+
+        ror_radius = downsample_voxel * 5.0
+        ror_nb_points = 6
+        pcd_clean, _ = pcd_after_proj.remove_radius_outlier(
+            nb_points=ror_nb_points, radius=ror_radius
+        )
+        n_ror = len(pcd_clean.points)
+        self.logger.info(
+            f"ROR: radius={ror_radius:.4f}, nb_points={ror_nb_points}, "
+            f"removed {n_kept - n_ror}/{n_kept} pts, {n_ror} remaining"
+        )
+
         return pcd_clean
 
     def _remove_outliers_statistical(self, pcd):
@@ -1824,7 +2210,7 @@ class PointcloudAPI(QObject, Executor):
         bbox_target = points_target.max(axis=0) - points_target.min(axis=0)
         avg_diag = (np.linalg.norm(bbox_source) + np.linalg.norm(bbox_target)) / 2
 
-        voxel_size = avg_diag / 200
+        voxel_size = avg_diag / ALIGN_CONFIG['voxel_divisor']
         self.logger.info(f"Voxel size for registration: {voxel_size:.6f}")
         self.logger.info(f"Center distance / avg_diag: {center_distance / avg_diag:.4f}")
 
@@ -1909,11 +2295,14 @@ class PointcloudAPI(QObject, Executor):
         if test_identity.inlier_rmse < test_ransac.inlier_rmse:
             self.logger.info("Using Identity transform (better rmse)")
             current_transform = np.eye(4)
+            init_method = 'identity'
         else:
             self.logger.info("Using RANSAC transform (better rmse)")
             current_transform = result_ransac.transformation
+            init_method = 'ransac'
 
-        voxel_sizes = [voxel_size, voxel_size * 0.6, voxel_size * 0.3]
+        voxel_sizes = [voxel_size * factor for factor in ALIGN_CONFIG['level_factors']]
+        level_records = []
 
         self.logger.info(f"Starting multi-scale ICP with {len(voxel_sizes)} scales")
 
@@ -1936,13 +2325,13 @@ class PointcloudAPI(QObject, Executor):
                 vs * 2.0,
                 current_transform,
                 o3d.pipelines.registration.TransformationEstimationPointToPlane(),
-                o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=50)
+                o3d.pipelines.registration.ICPConvergenceCriteria(
+                    max_iteration=ALIGN_CONFIG['icp_max_iteration'])
             )
 
             current_transform = result_icp.transformation
 
-            # Scale estimation through exhaustive testing
-            scale_candidates = [0.95, 0.97, 0.99, 1.0, 1.01, 1.03, 1.05]
+            scale_candidates = ALIGN_CONFIG['scale_candidates'] if ALIGN_CONFIG['estimate_scale'] else []
             best_scale = 1.0
             best_rmse = result_icp.inlier_rmse
 
@@ -1955,21 +2344,33 @@ class PointcloudAPI(QObject, Executor):
                     vs * 2.0,
                     current_transform,
                     o3d.pipelines.registration.TransformationEstimationPointToPlane(),
-                    o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=3)
+                    o3d.pipelines.registration.ICPConvergenceCriteria(
+                        max_iteration=ALIGN_CONFIG['scale_test_iteration'])
                 )
 
                 if test_result.inlier_rmse < best_rmse:
                     best_rmse = test_result.inlier_rmse
                     best_scale = test_scale
 
-            # Apply best scale to source point cloud
             if best_scale != 1.0:
                 pcd_source_scaled.scale(best_scale, center=pcd_source_scaled.get_center())
                 cumulative_scale *= best_scale
-                cumulative_scale = np.clip(cumulative_scale, 0.8, 1.5)
+                cumulative_scale = float(np.clip(cumulative_scale, *ALIGN_CONFIG['scale_clip']))
                 self.logger.info(f"ICP scale {idx+1}/{len(voxel_sizes)} (voxel={vs:.6f}): fitness={result_icp.fitness:.6f}, rmse={best_rmse:.6f}, best_scale={best_scale:.6f}, cumulative={cumulative_scale:.6f}")
             else:
                 self.logger.info(f"ICP scale {idx+1}/{len(voxel_sizes)} (voxel={vs:.6f}): fitness={result_icp.fitness:.6f}, rmse={result_icp.inlier_rmse:.6f}, scale=1.0 (no adjustment)")
+
+            level_records.append({
+                'level': idx + 1,
+                'voxel_size': float(vs),
+                'source_points': int(len(source_down_icp.points)),
+                'target_points': int(len(target_down_icp.points)),
+                'fitness': float(result_icp.fitness),
+                'inlier_rmse': float(result_icp.inlier_rmse),
+                'rmse_after_scale': float(best_rmse),
+                'scale_step': float(best_scale),
+                'cumulative_scale': float(cumulative_scale),
+            })
 
         T_align_local = current_transform
         self.logger.info("Final T_align_local (in target coords):")
@@ -1989,10 +2390,9 @@ class PointcloudAPI(QObject, Executor):
 
         new_location, new_rotation, new_scale = self._decompose_transform_matrix(T_source_new)
 
-        # Apply cumulative scale adjustment
         new_scale = new_scale * cumulative_scale
-        # Constrain to reasonable range relative to original scale
-        new_scale = np.clip(new_scale, source_transform['scale'] * 0.8, source_transform['scale'] * 1.5)
+        scale_lo, scale_hi = ALIGN_CONFIG['scale_clip']
+        new_scale = np.clip(new_scale, source_transform['scale'] * scale_lo, source_transform['scale'] * scale_hi)
 
         self.logger.info(f"Decomposed result:")
         self.logger.info(f"  new_location: [{new_location[0]:.6f}, {new_location[1]:.6f}, {new_location[2]:.6f}]")
@@ -2008,7 +2408,18 @@ class PointcloudAPI(QObject, Executor):
             'rotation': new_rotation,
             'scale': new_scale,
             'fitness': result_icp.fitness,
-            'rmse': result_icp.inlier_rmse
+            'rmse': result_icp.inlier_rmse,
+            'registration': {
+                'init_method': init_method,
+                'voxel_size': float(voxel_size),
+                'ransac_fitness': float(result_ransac.fitness),
+                'ransac_rmse': float(result_ransac.inlier_rmse),
+                'identity_test_rmse': float(test_identity.inlier_rmse),
+                'ransac_test_rmse': float(test_ransac.inlier_rmse),
+                'estimate_scale': bool(ALIGN_CONFIG['estimate_scale']),
+                'cumulative_scale': float(cumulative_scale),
+                'levels': level_records,
+            }
         }
 
     def _process_merge_sync(self, ply1: Path, ply2: Path, cleaning_params: dict,

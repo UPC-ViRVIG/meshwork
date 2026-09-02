@@ -1,5 +1,4 @@
 # docker/docker-compose.yml
-
 services:
   blender-service:
     build:
@@ -22,7 +21,7 @@ services:
       - ../.runtime/logs:/app/logs
 
     ports:
-      - "${BLENDER_GRPC_PORT:-50051}:50051"
+      - "${MESHWORK_BIND_ADDR:-127.0.0.1}:${BLENDER_GRPC_PORT:-50051}:50051"
 
     restart: unless-stopped
 
@@ -45,7 +44,7 @@ services:
       - ../.runtime/logs:/app/logs
 
     ports:
-      - "${COLMAP_GRPC_PORT:-50052}:50052"
+      - "${MESHWORK_BIND_ADDR:-127.0.0.1}:${COLMAP_GRPC_PORT:-50052}:50052"
 
     restart: unless-stopped
 
@@ -70,7 +69,7 @@ services:
       - ../.runtime/logs:/app/logs
 
     ports:
-      - "${ALICEVISION_GRPC_PORT:-50053}:50053"
+      - "${MESHWORK_BIND_ADDR:-127.0.0.1}:${ALICEVISION_GRPC_PORT:-50053}:50053"
 
     restart: unless-stopped
 

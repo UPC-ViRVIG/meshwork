@@ -179,6 +179,10 @@ class MenuHandler(QObject):
         if self.signal_router:
             self.signal_router.emit('view.reset_layout', {})
 
+    def on_view_toggle_bounds(self, checked=False):
+        if self.signal_router:
+            self.signal_router.emit('view.toggle_bounds', {'visible': bool(checked)})
+
     def on_help_about(self):
         try:
             from gui.dialog_about import AboutDialog
@@ -282,6 +286,11 @@ class MenuManager(QObject):
         self.builder.add_action("view_reset_layout", "view", "&Reset Layout",
                                self.handler.on_view_reset_layout, "Ctrl+Alt+R",
                                status_tip="Reset GUI layout to default")
+        self.builder.add_separator("view")
+        self.builder.add_action("view_show_bounds", "view", "Show &Bounds",
+                               self.handler.on_view_toggle_bounds, "Ctrl+B",
+                               checkable=True,
+                               status_tip="Show axis-aligned extent of scene objects with dimension labels")
 
     def _setup_tools_menu(self):
         self.builder.create_menu("tools", "&Tools")

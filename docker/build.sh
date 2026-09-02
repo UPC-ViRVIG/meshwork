@@ -135,11 +135,11 @@ cd ../docker
 
 echo ""
 echo "Creating runtime directories..."
-sudo rm -rf ../.runtime
+rm -rf ../.runtime 2>/dev/null || sudo rm -rf ../.runtime
 mkdir -p ../.runtime/{socks,logs,workspace}
 chmod 755 ../.runtime/{socks,logs,workspace}
 
-if [ ! -f ".env" ]; then
+if [ ! -f ".env" ] && [ -f ".env.example" ]; then
     cp .env.example .env
     echo "Created .env from .env.example"
 fi

@@ -52,8 +52,8 @@ class ConnectionManager:
         return "localhost"
 
     @staticmethod
-    def get_grpc_options(is_uds: bool = False) -> list:
-        """Get gRPC channel/server options based on connection type"""
+    def get_grpc_options(is_uds: bool = False, is_server: bool = False) -> list:
+        """Get gRPC channel/server options based on connection type and role"""
         try:
             from config import get_config
             config = get_config()
@@ -69,19 +69,28 @@ class ConnectionManager:
             ('grpc.max_send_message_length', max_message_size),
         ]
 
-        # Add network options for TCP connections only
-        if not is_uds:
-            keepalive_time = grpc_config.get("keepalive_time_ms", 30000)
-            keepalive_timeout = grpc_config.get("keepalive_timeout_ms", 10000)
-            keepalive_permit = grpc_config.get("keepalive_permit_without_calls", True)
+        keepalive_time = grpc_config.get("keepalive_time_ms", 30000)
+        keepalive_timeout = grpc_config.get("keepalive_timeout_ms", 10000)
+        keepalive_permit = grpc_config.get("keepalive_permit_without_calls", True)
+        min_ping_interval = grpc_config.get("min_ping_interval_ms", 10000)
 
+        if is_server:
+            options.extend([
+                ('grpc.keepalive_time_ms', keepalive_time),
+                ('grpc.keepalive_timeout_ms', keepalive_timeout),
+                ('grpc.keepalive_permit_without_calls', keepalive_permit),
+                ('grpc.http2.max_ping_strikes', 0),
+                ('grpc.http2.min_ping_interval_without_data_ms',
+                 max(1000, min(min_ping_interval, keepalive_time))),
+            ])
+        elif not is_uds:
             options.extend([
                 ('grpc.keepalive_time_ms', keepalive_time),
                 ('grpc.keepalive_timeout_ms', keepalive_timeout),
                 ('grpc.keepalive_permit_without_calls', keepalive_permit),
                 ('grpc.http2.max_pings_without_data', 0),
-                ('grpc.http2.min_time_between_pings_ms', 10000),
-                ('grpc.http2.min_ping_interval_without_data_ms', 300000),
+                ('grpc.http2.min_time_between_pings_ms',
+                 max(1000, min(min_ping_interval, keepalive_time))),
             ])
 
         return options

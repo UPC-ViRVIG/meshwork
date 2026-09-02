@@ -216,6 +216,7 @@ class SceneObject:
     source_directory: str = ""
 
     selected: bool = False
+    visible: bool = True
     mesh_data: Optional[MeshData] = None
     original_snapshot: Optional[ObjectSnapshot] = field(default=None, init=False)
 
@@ -432,6 +433,12 @@ class SceneObjectManager:
     def select_all(self) -> bool:
         for obj in self.objects.values():
             obj.selected = True
+        return True
+
+    def toggle_visibility(self, name: str) -> bool:
+        if name not in self.objects:
+            return False
+        self.objects[name].visible = not self.objects[name].visible
         return True
 
     def has_selections(self) -> bool:

@@ -1,6 +1,6 @@
 # Datasets
 
-Source information, licenses, and download instructions for datasets used in the MeshWork paper.
+Source information, licenses and download instructions for the datasets used in the MeshWork paper.
 
 ## Alexander the Great
 
@@ -9,15 +9,15 @@ Source information, licenses, and download instructions for datasets used in the
 | Source | British Museum Digital Humanities |
 | URL | https://github.com/BritishMuseumDH/alexanderTheGreat |
 | License | CC-BY-NC-SA (Creative Commons Attribution-NonCommercial-ShareAlike) |
-| Images | 57 photographs (Sony A6000) |
+| Images | 57 photographs (Sony A6000), controlled museum lighting |
 | Subject | Marble portrait head, British Museum collection |
 | Author | Daniel Pett, British Museum |
+| Used for | Baseline reconstruction quality (Example 1) |
 
-**Download**:
 ```bash
 git clone https://github.com/BritishMuseumDH/alexanderTheGreat.git
 ```
-Images are in the `raw/` directory.
+The photographs are in the `images/` directory.
 
 **Attribution**: Photographs and models by Daniel Pett, Digital Humanities Lead, British Museum. Copyright Trustees of the British Museum.
 
@@ -28,31 +28,32 @@ Images are in the `raw/` directory.
 | Source | Natowi photogrammetry datasets |
 | URL | https://github.com/natowi/dataset_flowerpot |
 | License | CC-BY-SA 4.0 (Creative Commons Attribution-ShareAlike 4.0 International) |
-| Images | 81–245 photographs (Meizu M1 Note) |
-| Subject | Decorative flowerpot on table surface |
+| Images | 245 photographs (Meizu M1 Note); the paper uses a subset of 81 |
+| Subject | Decorative flowerpot standing on a table, with a printed scale bar in the scene |
 | Author | Natowi |
+| Used for | Supporting-plane detection and background removal (Example 2) |
 
-**Download**:
 ```bash
 git clone https://github.com/natowi/dataset_flowerpot.git
 ```
-The `full_dataset/` directory contains all 245 images. We used a subset of 81 images in the paper.
+The `full_dataset/` directory contains all 245 images.
 
 **Attribution**: The dataset_flowerpot by Natowi, licensed under CC-BY-SA 4.0. This dataset uses the "Scale for Small-Object Photogrammetry" by Samantha Porter.
 
-## Aloe Plant (Depth Images)
+## Socketed axe (Arreton Down)
 
 | Field | Value |
 |-------|-------|
-| Source | Agisoft Metashape sample data |
-| URL | https://www.agisoft.com/downloads/sample-data/ |
-| License | **Not explicitly stated** — provided as sample data for software demonstration |
-| Images | 29 photographs (iPad Pro 11-inch, 4th generation, front camera) |
-| Subject | Potted aloe plant with depth-of-field blur |
-| Author | Agisoft LLC |
+| Source | MicroPasts crowdsourcing platform |
+| URL | https://github.com/MicroPasts/socketed-axe-version2 |
+| License | CC-BY |
+| Images | 54 photographs in `photos/`, with crowd-sourced masks in `masks/` |
+| Subject | Late Bronze / Early Iron Age socketed axe head with the blade wedged into the socket, found on the Isle of Wight |
+| Reference data | `models/`: textured meshes (100k and 300k faces) and the dense point cloud produced with PhotoScan Pro 1.1.6; `other/`: camera positions and alignment markers |
+| Used for | Multi-scan registration, merging and end-to-end assembly (Example 3); the PhotoScan model serves as an independent reference for `scripts/eval/compare_reference.py` |
 
-**Download**: Visit https://www.agisoft.com/downloads/sample-data/ and download the "Depth images" dataset.
+```bash
+git clone https://github.com/MicroPasts/socketed-axe-version2.git
+```
 
-**Note**: Agisoft provides these images as sample data but does not specify an explicit redistribution license. We are using them for academic evaluation purposes. This dataset may be replaced in a future version with a dataset under a clear open license.
-
-<!-- license status pending — may be replaced or confirmed -->
+**Attribution**: Access and photography: Andy Bevan, Chiara Bonacchi, Adi Keinan-Schoonbaert, Dan Pett, Neil Wilkin. Model build: Hugh Fiske. Photo masks: MicroPasts contributors (see the dataset README).

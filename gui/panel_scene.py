@@ -1,7 +1,10 @@
 # gui/panel_scene.py
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QListWidget, QLabel, QListWidgetItem, QHBoxLayout, QPushButton, QApplication
-from PySide6.QtCore import Signal, QObject, Qt
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QListWidget, QLabel,
+                                QListWidgetItem, QHBoxLayout, QPushButton,
+                                QApplication, QToolButton, QSizePolicy)
+from PySide6.QtCore import Signal, QObject, Qt, QSize
 from PySide6.QtGui import QKeyEvent
+import qtawesome as qta
 from logger import get_logger
 
 
@@ -29,9 +32,68 @@ class SceneController(QObject):
         if self.signal_router:
             self.signal_router.emit('scene.do_remove_object', {})
 
+    def _toggle_visibility(self, object_name: str):
+        if self.signal_router:
+            self.signal_router.emit('scene.do_toggle_visibility', {
+                'object_name': object_name
+            })
+
     def cleanup(self):
         if self.signal_router:
             self.signal_router.unsubscribe_all('SceneController')
+
+
+class SceneItemWidget(QWidget):
+
+    visibilityToggled = Signal(str)
+
+    def __init__(self, object_name: str, display_text: str, visible: bool, parent=None):
+        super().__init__(parent)
+        self.object_name = object_name
+        self._visible = visible
+        self.logger = get_logger()
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(4)
+
+        self.name_label = QLabel(display_text)
+        self.name_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        layout.addWidget(self.name_label)
+
+        self.vis_btn = QToolButton()
+        self.vis_btn.setAutoRaise(True)
+        self.vis_btn.setFixedSize(QSize(20, 20))
+        self.vis_btn.setIconSize(QSize(14, 14))
+        self.vis_btn.clicked.connect(self._on_vis_clicked)
+        layout.addWidget(self.vis_btn)
+
+        self._update_icon()
+
+    def _update_icon(self):
+        if self._visible:
+            icon = qta.icon('fa5.eye', color='#cccccc')
+        else:
+            icon = qta.icon('fa5.eye-slash', color='#666666')
+        self.vis_btn.setIcon(icon)
+
+    def set_visible_state(self, visible: bool):
+        self._visible = visible
+        self._update_icon()
+
+    def set_selected(self, selected: bool):
+        if selected:
+            self.name_label.setStyleSheet("color: white; background: transparent;")
+            self.setStyleSheet("background-color: #2255aa;")
+        else:
+            if self._visible:
+                self.name_label.setStyleSheet("color: white; background: transparent;")
+            else:
+                self.name_label.setStyleSheet("color: #666666; background: transparent;")
+            self.setStyleSheet("background-color: transparent;")
+
+    def _on_vis_clicked(self):
+        self.visibilityToggled.emit(self.object_name)
 
 
 class ScenePanel(QWidget):
@@ -95,78 +157,68 @@ class ScenePanel(QWidget):
             if obj_data.get('type') in ['CAMERA', 'LIGHT']:
                 continue
 
-            item = QListWidgetItem()
-
             name = obj_data.get('name', 'unnamed')
             obj_type = obj_data.get('type', 'UNKNOWN')
+            visible = obj_data.get('visible', True)
             display_text = f"{name} [{obj_type}]"
 
-            item.setText(display_text)
+            item = QListWidgetItem()
             item.setData(Qt.UserRole, name)
+            item.setSizeHint(QSize(0, 28))
+
+            item_widget = SceneItemWidget(name, display_text, visible)
+            item_widget.visibilityToggled.connect(self._on_visibility_toggled)
 
             self.object_list.addItem(item)
+            self.object_list.setItemWidget(item, item_widget)
+
+            retrieved = self.object_list.itemWidget(item)
+
 
     def _update_item_styles(self):
-        """Update visual styles for all items based on selection state"""
         for i in range(self.object_list.count()):
             item = self.object_list.item(i)
             object_name = item.data(Qt.UserRole)
-
-            if object_name in self.selected_object_names:
-                # Selected style - blue background
-                item.setBackground(Qt.blue)
-                item.setForeground(Qt.white)
-            else:
-                # Unselected style - default
-                item.setBackground(Qt.transparent)
-                item.setForeground(Qt.white)
+            widget = self.object_list.itemWidget(item)
+            if widget:
+                selected = object_name in self.selected_object_names
+                widget.set_selected(selected)
 
     def _update_list_selection(self, all_objects: list):
-        # Sync local selection state with backend state
         backend_selected = set(obj.get('name', '') for obj in all_objects if obj.get('selected', False))
-
-        # Update local state to match backend
         self.selected_object_names = backend_selected
-
-        # Update visual appearance
         self._update_item_styles()
-
-        # Update delete button
         self.delete_btn.setEnabled(len(self.selected_object_names) > 0)
 
     def done_selection_changed(self, data):
         all_objects = data.get('all_objects', [])
         self._refresh_object_list(all_objects)
         self._update_list_selection(all_objects)
+        for i in range(self.object_list.count()):
+            item = self.object_list.item(i)
+            w = self.object_list.itemWidget(item)
 
     def on_item_clicked(self, item: QListWidgetItem):
         object_name = item.data(Qt.UserRole)
         if object_name:
             extend = self._get_modifier_keys()
 
-            # Update selection state immediately for instant visual feedback
             if extend:
-                # Toggle selection
                 if object_name in self.selected_object_names:
                     self.selected_object_names.remove(object_name)
                 else:
                     self.selected_object_names.add(object_name)
             else:
-                # Replace selection
                 self.selected_object_names.clear()
                 self.selected_object_names.add(object_name)
 
-            # Update visual appearance immediately
             self._update_item_styles()
-
-            # Update delete button state
             self.delete_btn.setEnabled(len(self.selected_object_names) > 0)
-
-            # Emit selection changed signal
             self.selectionChanged.emit(list(self.selected_object_names))
-
-            # Send signal to backend (async, no waiting)
             self.controller._select_object(object_name, extend)
+
+    def _on_visibility_toggled(self, object_name: str):
+        self.controller._toggle_visibility(object_name)
 
     def on_delete_selected(self):
         self.controller._delete_selected_objects()

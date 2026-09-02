@@ -35,7 +35,9 @@ Thumbs.db
 logs/
 
 # Docker
-.env*
+.env
+.env.*
+!.env.example
 
 # Build artifacts
 build/

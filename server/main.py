@@ -154,7 +154,7 @@ async def serve():
     service_instance, python_queue = await create_service(args.service)
 
     # Get gRPC options for server
-    server_options = ConnectionManager.get_grpc_options(is_uds=False)
+    server_options = ConnectionManager.get_grpc_options(is_server=True)
 
     # Create gRPC server with options
     server = aio.server(options=server_options)
@@ -189,6 +189,13 @@ async def serve():
     print(f"PTY Available: {pty_available}")
 
     await server.start()
+
+    if os.path.exists(socket_path):
+        try:
+            os.chmod(socket_path, 0o666)
+        except OSError as e:
+            print(f"Warning: could not relax permissions on {socket_path}: {e}")
+
     print(f"{args.service.upper()} Service started successfully!")
 
     try:

@@ -5,6 +5,7 @@ from PySide6.QtCore import Qt, QSettings, QTimer
 from PySide6.QtGui import QKeySequence
 import sys
 import os
+from pathlib import Path
 from typing import Optional
 from logger import get_logger
 from config import get_config
@@ -16,6 +17,7 @@ from gui.dock_manager import DockManager
 from gui.view import View
 from gui.script import ScriptArea
 from gui.project_state import ProjectState
+from gui.latency_monitor import UILatencyMonitor
 
 import faulthandler
 import os
@@ -49,12 +51,14 @@ class MainApplication(QMainWindow):
 
         self.main_splitter = None
         self.viewport_container = None
+        self.latency_monitor = None
 
         self._setup_core_architecture()
         self._setup_ui()
         self._setup_connections()
         self._restore_state()
         self._start_worker_thread()
+        self._start_latency_monitor()
 
         self.logger.info("MainApplication initialized successfully")
 
@@ -159,6 +163,20 @@ class MainApplication(QMainWindow):
         if self.worker_thread:
             self.worker_thread.start()
 
+    def _start_latency_monitor(self):
+        monitor_config = self.config.get("gui", "latency_monitor", {}) or {}
+        if not monitor_config.get("enabled", True):
+            return
+        log_file = Path(self.config.get("logging", "file", "")).expanduser()
+        csv_path = log_file.parent / "ui_latency.csv"
+        self.latency_monitor = UILatencyMonitor(
+            interval_ms=monitor_config.get("interval_ms", 100),
+            report_interval_s=monitor_config.get("report_interval_s", 30),
+            csv_path=csv_path,
+            parent=self
+        )
+        self.latency_monitor.start()
+
     def _restore_state(self):
         if self.settings.contains("geometry"):
             self.restoreGeometry(self.settings.value("geometry"))
@@ -245,6 +263,8 @@ class MainApplication(QMainWindow):
                 self.script_area.cleanup()
             if self.view:
                 self.view.cleanup()
+            if self.latency_monitor:
+                self.latency_monitor.stop()
             if self.worker_thread and self.worker_thread.isRunning():
                 self.worker_thread.stop_thread()
             self.logger.info("Application closing gracefully")

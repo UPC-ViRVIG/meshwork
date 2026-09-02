@@ -40,6 +40,7 @@ class SceneManager(QObject, Executor):
             self.signal_router.subscribe('scene.do_clear_selection', self.do_clear_selection, 'SceneManager')
             self.signal_router.subscribe('scene.do_select_all', self.do_select_all, 'SceneManager')
             self.signal_router.subscribe('scene.do_clear_scene', self.do_clear_scene, 'SceneManager')
+            self.signal_router.subscribe('scene.do_toggle_visibility', self.do_toggle_visibility, 'SceneManager')
             self.signal_router.subscribe('scene.object_modified', self.do_object_modified, 'SceneManager')
             self.signal_router.subscribe('scene.add_primitive', self.do_add_primitive, 'SceneManager')
             self.signal_router.subscribe('scene.request_sync', self.do_request_sync, 'SceneManager')
@@ -120,6 +121,12 @@ else:
         self._emit_render_update()
         self._emit_selection_changed(True)
 
+    def do_toggle_visibility(self, data: Dict[str, Any]):
+        object_name = data.get('object_name', '')
+        self.scene_manager.toggle_visibility(object_name)
+        self._emit_render_update()
+        self._emit_selection_changed(True)
+
     def do_object_modified(self, data: Dict[str, Any]):
         pass
 
@@ -195,9 +202,11 @@ else:
             obj_info = {
                 'name': obj.name,
                 'type': obj.type.value,
-                'selected': obj.selected
+                'selected': obj.selected,
+                'visible': obj.visible
             }
             all_objects.append(obj_info)
+
 
         self.signal_router.emit('scene.done_selection_changed', {
             'all_objects': all_objects
@@ -215,6 +224,8 @@ else:
         selected_names = []
 
         for obj in self.scene_manager.get_all_objects().values():
+            if not obj.visible:
+                continue
             obj_data = {
                 'name': obj.name,
                 'type': obj.type.value,
@@ -231,6 +242,20 @@ else:
 
                 if obj.mesh_data.vertex_colors is not None:
                     obj_data['vertex_colors'] = obj.mesh_data.vertex_colors.tolist()
+
+                self.logger.debug(
+                    f"to_render: {obj.name} "
+                    f"verts={len(obj.mesh_data.vertices)}, "
+                    f"faces={len(obj.mesh_data.faces)}, "
+                    f"colors={'yes dtype=' + str(obj.mesh_data.vertex_colors.dtype) if obj.mesh_data.vertex_colors is not None else 'no'}, "
+                    f"dirty={obj.dirty_state.value}"
+                )
+            else:
+                self.logger.debug(
+                    f"to_render: {obj.name} has_mesh={obj.has_mesh}, "
+                    f"mesh_data={'none' if not obj.mesh_data else 'exists'}, "
+                    f"dirty={obj.dirty_state.value}"
+                )
 
             render_objects.append(obj_data)
 
@@ -687,6 +712,12 @@ else:
                             vertex_colors = np.array(vertex_colors, dtype=np.uint8)
 
                     if vertices is not None and len(vertices) > 0:
+                        self.logger.debug(
+                            f"_update_scene_from_data: {name} "
+                            f"verts={len(vertices)}, faces={len(faces) if faces is not None else 0}, "
+                            f"colors={'yes dtype=' + str(vertex_colors.dtype) if vertex_colors is not None else 'no'}, "
+                            f"format={format_version}"
+                        )
                         if not obj.mesh_data:
                             mesh_data = MeshData(
                                 vertices=vertices,

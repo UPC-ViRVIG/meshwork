@@ -294,6 +294,8 @@ class SceneRenderer:
         self._render_objects = {}
         self._grid_actors = []
         self._axes_actor = None
+        self._bounds_actor = None
+        self._bounds_visible = False
         self.max_pointcloud_points = 100000
 
         self._saved_camera_state = None
@@ -412,11 +414,15 @@ class SceneRenderer:
         self._save_camera_state()
         current_names = set()
 
+
         for obj_data in objects_data:
             name = obj_data.get('name', 'unnamed')
             current_names.add(name)
 
             dirty_state = obj_data.get('dirty_state', 'none')
+            in_render_objects = name in self._render_objects
+            in_mesh_actors = name in self._mesh_actors
+
 
             if name not in self._render_objects or dirty_state == 'topology_change':
                 render_obj = RenderObjectData(
@@ -445,7 +451,8 @@ class SceneRenderer:
                 render_obj.selected = obj_data.get('selected', False)
                 render_obj.dirty_state = dirty_state
 
-            if len(render_obj.vertices) > 0:
+            has_vertices = len(render_obj.vertices) > 0
+            if has_vertices:
                 self._process_object_update(render_obj)
 
         objects_to_remove = set(self._mesh_actors.keys()) - current_names
@@ -455,16 +462,22 @@ class SceneRenderer:
                 del self._render_objects[name]
 
         self._restore_camera_state()
+        if self._bounds_visible:
+            self._refresh_bounds()
         self._plotter.render()
 
     def _process_object_update(self, obj):
+        existing_selected = obj.name in self._selection_actors
+        in_mesh_actors = obj.name in self._mesh_actors
+
         if obj.dirty_state == 'topology_change':
             self._handle_topology_change(obj)
         elif obj.dirty_state == 'transform_only':
             self._handle_transform_only(obj)
         else:
-            existing_selected = obj.name in self._selection_actors
-            if obj.selected != existing_selected:
+            if not in_mesh_actors:
+                self._handle_topology_change(obj)
+            elif obj.selected != existing_selected:
                 self._handle_selection_change(obj)
 
     def _handle_topology_change(self, obj):
@@ -820,6 +833,56 @@ class SceneRenderer:
         except Exception:
             pass
         self._plotter.render()
+
+    def toggle_bounds(self, visible):
+        self._bounds_visible = bool(visible)
+        self._refresh_bounds()
+        self._plotter.render()
+
+    def _refresh_bounds(self):
+        if self._bounds_actor is not None:
+            try:
+                self._plotter.remove_bounds_axes()
+            except Exception:
+                pass
+            self._bounds_actor = None
+        if not self._bounds_visible:
+            return
+        bounds = self._scene_bounds()
+        if bounds is None:
+            return
+        try:
+            self._bounds_actor = self._plotter.show_bounds(
+                bounds=bounds,
+                location='outer',
+                grid=False,
+                xtitle='X',
+                ytitle='Y',
+                ztitle='Z',
+                font_size=10,
+                color='white'
+            )
+        except Exception as e:
+            self.logger.warning(f"Failed to show bounds: {e}")
+            self._bounds_actor = None
+
+    def _scene_bounds(self):
+        mins = []
+        maxs = []
+        for actor in self._mesh_actors.values():
+            try:
+                b = actor.GetBounds()
+            except Exception:
+                continue
+            if b is None or b[0] > b[1]:
+                continue
+            mins.append([b[0], b[2], b[4]])
+            maxs.append([b[1], b[3], b[5]])
+        if not mins:
+            return None
+        lo = np.min(np.asarray(mins), axis=0)
+        hi = np.max(np.asarray(maxs), axis=0)
+        return [float(lo[0]), float(hi[0]), float(lo[1]), float(hi[1]), float(lo[2]), float(hi[2])]
 
     def reset_camera(self):
         self._plotter.camera.position = self.DEFAULT_CAMERA_POSITION

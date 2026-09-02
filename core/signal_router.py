@@ -41,6 +41,10 @@ SCENE_DO_SIGNALS = {
     'scene.do_clear_scene': {
         'data': {},
         'receivers': ['SceneManager']
+    },
+    'scene.do_toggle_visibility': {
+        'data': {'object_name': str},
+        'receivers': ['SceneManager']
     }
 }
 
@@ -262,6 +266,10 @@ VIEW_SIGNALS = {
     'view.reset_layout': {
         'data': {},
         'receivers': ['MainWindow']
+    },
+    'view.toggle_bounds': {
+        'data': {'visible': bool},
+        'receivers': ['View']
     }
 }
 
@@ -408,6 +416,7 @@ class SignalRouter(QObject):
     view_reset_camera = Signal(dict)
     view_reset_layout = Signal(dict)
 
+    view_toggle_bounds = Signal(dict)
     status_message = Signal(dict)
     status_progress = Signal(dict)
 
@@ -422,6 +431,7 @@ class SignalRouter(QObject):
     scene_do_clear_selection = Signal(dict)
     scene_do_select_all = Signal(dict)
     scene_do_clear_scene = Signal(dict)
+    scene_do_toggle_visibility = Signal(dict)
 
     scene_done_selection_changed = Signal(dict)
     scene_done_scene_cleared = Signal(dict)
@@ -531,6 +541,7 @@ class SignalRouter(QObject):
             'view.camera_changed': self.view_camera_changed,
             'view.reset_camera': self.view_reset_camera,
             'view.reset_layout': self.view_reset_layout,
+            'view.toggle_bounds': self.view_toggle_bounds,
             'status.message': self.status_message,
             'status.progress': self.status_progress,
             'file.transfer_progress': self.file_transfer_progress,
@@ -541,6 +552,7 @@ class SignalRouter(QObject):
             'scene.do_clear_selection': self.scene_do_clear_selection,
             'scene.do_select_all': self.scene_do_select_all,
             'scene.do_clear_scene': self.scene_do_clear_scene,
+            'scene.do_toggle_visibility': self.scene_do_toggle_visibility,
             'scene.done_selection_changed': self.scene_done_selection_changed,
             'scene.done_scene_cleared': self.scene_done_scene_cleared,
             'executor.do_execute_script': self.executor_do_execute_script,

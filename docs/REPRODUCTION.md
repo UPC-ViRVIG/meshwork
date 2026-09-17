@@ -22,6 +22,7 @@ See [DATASETS.md](DATASETS.md) for sources, licenses and attribution.
 | Alexander the Great | `git clone https://github.com/BritishMuseumDH/alexanderTheGreat.git` | `alexanderTheGreat/images/` (57) |
 | Flowerpot | `git clone https://github.com/natowi/dataset_flowerpot.git` | `dataset_flowerpot/full_dataset/` (81) |
 | Socketed axe | `git clone https://github.com/MicroPasts/socketed-axe-version2.git` | `socketed-axe-version2/photos/` (54); reference model in `models/` |
+| Limestone capital | `git clone https://github.com/BritishMuseumDH/architecturalElement.git` | `architecturalElement/images/` (68); object masks in `masks/` |
 
 ## GUI workflow
 
@@ -32,6 +33,8 @@ See [DATASETS.md](DATASETS.md) for sources, licenses and attribution.
 3. Settings: Tool `COLMAP`; Quality `Fast`, `Balanced` or `Quality`; Output `Point Cloud` (dense point cloud, the input of the point cloud pipeline) or `Dense Mesh` (OpenMVS textured mesh).
 4. Start. Progress and the console output of the services stream into the dialog; the viewport stays interactive while the job runs.
 5. Import loads the result into the scene. The output folder now contains `dense_points.ply`, `cameras.txt`, `images.txt`, `reconstruction.json` and, for `Dense Mesh`, the textured mesh (`.obj`, `.mtl`, `.jpg`).
+
+Photographs are copied into `<output folder>/converted/` before they are uploaded to the service. Since v1.0.1 the EXIF orientation tag is applied during that copy, so portrait captures reach COLMAP upright and the gravity estimate of Analyze Plane is correct. With earlier versions such photographs had to be rotated by hand first.
 
 ### Point cloud pipeline (Tools panel, Point Cloud group)
 
@@ -45,7 +48,7 @@ Select the object(s) in the Scene panel, press the tool button, adjust the param
 | Merge Clouds | Requires two selected objects: concatenates them in the frame of the one listed second in the Scene panel and applies the ticked filters | new object `4.merged_<filters>` |
 | Generate Mesh | Poisson reconstruction with the given Depth, optional hole filling and smoothing | new object `5.mesh_d<depth>` (vertex colours) |
 
-File > Export... saves the selected object as `.obj`, `.ply` or `.stl`; File > Save stores the scene as a `.blend` project.
+File > Export... saves the objects selected in the Scene panel as `.obj`, `.ply` or `.stl`; with nothing selected it reports that a selection is needed. Point clouds are written as `.ply` or as `.obj` (vertices without faces); `.stl` stores triangles only and cannot hold a point cloud. File > Save stores the scene as a `.blend` project.
 
 ### Metrics
 
@@ -65,7 +68,7 @@ The UI event-loop latency during processing is logged to `~/.meshwork/logs/ui_la
 2. Import the result and inspect facial features, hair and drapery folds.
 3. File > Export... as `.obj` to keep the photo texture.
 
-**Expected output**: a watertight textured mesh of approximately 280,000 vertices produced in about 18 minutes on the hardware listed above. `reconstruction.json` records the image count, the sparse point count and the timings of the reconstruction stages.
+**Expected output**: a watertight textured mesh of approximately 280,000 vertices produced in about 6.5 minutes on the hardware listed above. `reconstruction.json` records the image count, the sparse point count and the timings of the reconstruction stages.
 
 ## Example 2: Flowerpot - background removal
 
@@ -121,6 +124,33 @@ python scripts/eval/compare_reference.py <scan A folder>/5.mesh_d9.ply socketed-
 ```
 
 `coarse.json` holds the transform of scan A after step 3 as shown in the Transform panel (`{"location": [x, y, z], "rotation": [rx, ry, rz], "scale": [sx, sy, sz]}`, rotation in radians). `compare_reference.py` aligns the result to the reference with a similarity transform and reports nearest-neighbour distances as fractions of the reference bounding-box diagonal (`--reference-diagonal-mm` converts them to millimetres when the physical size is known).
+
+## Example 4: Limestone capital - a support smaller than the object
+
+**Objective**: a scene in which the supporting surface is not the dominant plane, so that the gravity-guided detector and a plain RANSAC fit disagree.
+
+1. Reconstruction: photographs `architecturalElement/images/`, Quality `Balanced`, Output `Dense Mesh`. The 68 photographs are in portrait orientation; v1.0.1 rotates them according to their EXIF tag on the way to the service.
+2. Import the dense cloud; select it; Analyze Plane > Apply. The detected plane is the top of the plinth, nearly perpendicular to gravity.
+3. Remove Plane with Method `DBSCAN` > Apply, then Generate Mesh (Depth 9) > Apply.
+
+**What to look for**: the painted gallery walls carry almost no texture and are barely reconstructed, so the plinth is a small ring of points under a large object and the largest planar structure in the cloud is the surface of the capital itself. A plain RANSAC fit therefore selects a near-vertical plane tangent to the capital, and cutting below it destroys most of the object.
+
+**Ablation and object-level evaluation**:
+
+```bash
+python scripts/eval/ablation_plane.py <output folder>
+python scripts/eval/object_loss_from_photomasks.py <output folder> \
+    architecturalElement/masks <output folder>/eval_plane/ablation_plane.json \
+    --mask-transpose ROTATE_270
+```
+
+The first script runs both detectors on the same cloud and reports plane orientation, inlier ratio, removed fraction and timing. The second projects every dense point into the object masks distributed with the dataset and takes the majority vote over the registered views, which gives a point-level object label and therefore the fraction of object points that each cut removes. `--mask-transpose ROTATE_270` applies to the masks the same rotation that the EXIF tag applies to the photographs. The figure of the paper is drawn from these two outputs with
+
+```bash
+python scripts/eval/plot_plane_cuts.py <output folder> --out capital_planes.png
+```
+
+Both the recommended margin and the internal distance thresholds scale with the bounding-box diagonal of the cloud, which a small number of stray points far from the object can inflate; when the recommendation looks too conservative, reduce Margin before applying Remove Plane.
 
 ## Troubleshooting
 

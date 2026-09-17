@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QScrollArea, QListWidget, QListWidgetItem, QApplication
 )
 from PySide6.QtCore import Qt, Signal, QRunnable, QThreadPool
-from PySide6.QtGui import QPixmap, QMouseEvent
+from PySide6.QtGui import QPixmap, QMouseEvent, QImageReader
 from logger import get_logger
 from core.utils import ensure_directory_exists
 
@@ -245,8 +245,30 @@ class ImageProcessor:
             self.logger.error(f"RAW conversion failed for {os.path.basename(src_path)}: {type(e).__name__}: {str(e)}")
             return False
 
+    def _exif_orientation(self, src_path: str):
+        try:
+            from PIL import Image
+            with Image.open(src_path) as image:
+                return image.getexif().get(274)
+        except Exception:
+            return None
+
+    def _copy_upright_jpeg(self, src_path: str, dst_path: str) -> bool:
+        try:
+            from PIL import Image, ImageOps
+            with Image.open(src_path) as image:
+                upright = ImageOps.exif_transpose(image)
+                upright.save(dst_path, "JPEG", quality=95, exif=upright.getexif().tobytes())
+            self.logger.debug(f"EXIF orientation applied: {os.path.basename(dst_path)}")
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to apply EXIF orientation to {os.path.basename(src_path)}: {e}")
+            return False
+
     def _convert_standard_image(self, src_path: str, dst_path: str, target_size: Tuple[int, int], quality: int) -> bool:
         if src_path.lower().endswith(('.jpg', '.jpeg')) and target_size == (0, 0):
+            if self._exif_orientation(src_path) not in (None, 1):
+                return self._copy_upright_jpeg(src_path, dst_path)
             self.logger.debug(f"Direct copy for JPEG file: {os.path.basename(src_path)}")
             try:
                 import shutil
@@ -258,11 +280,14 @@ class ImageProcessor:
                 return False
 
         try:
-            self.logger.debug(f"Loading standard image with QPixmap: {os.path.basename(src_path)}")
-            pixmap = QPixmap(src_path)
-            if pixmap.isNull():
-                self.logger.error(f"Failed to load image with QPixmap: {os.path.basename(src_path)}")
+            self.logger.debug(f"Loading standard image with QImageReader: {os.path.basename(src_path)}")
+            reader = QImageReader(src_path)
+            reader.setAutoTransform(True)
+            image = reader.read()
+            if image.isNull():
+                self.logger.error(f"Failed to load image with QImageReader: {os.path.basename(src_path)}: {reader.errorString()}")
                 return False
+            pixmap = QPixmap.fromImage(image)
 
             original_size = (pixmap.width(), pixmap.height())
             self.logger.debug(f"Image loaded, original size: {original_size}")

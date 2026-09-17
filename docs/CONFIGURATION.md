@@ -162,14 +162,14 @@ The reconstruction dialog (Tools > 3D Reconstruction) offers the tools `COLMAP` 
 | Balanced | 1600 px | 8192 | 3 (max 1600 px) | 2 | 2 |
 | Quality | 2048 px | 16384 | 2 (max 1600 px) | 3 | 2 |
 
-Any value can be overridden per preset in `~/.meshwork/config.yaml` under `reconstruction.colmap.quality_levels` or `reconstruction.alicevision.quality_levels`. Processing time depends strongly on hardware; the timings reported in the paper are listed in [REPRODUCTION.md](REPRODUCTION.md).
+Photographs are copied into `<output folder>/converted/` before upload; JPEG files are passed through unchanged unless they carry an EXIF orientation tag, in which case they are rotated upright (v1.0.1 and later), and other formats are decoded with the same rotation applied. Any value can be overridden per preset in `~/.meshwork/config.yaml` under `reconstruction.colmap.quality_levels` or `reconstruction.alicevision.quality_levels`. Processing time depends strongly on hardware; the timings reported in the paper are listed in [REPRODUCTION.md](REPRODUCTION.md).
 
 ## Point Cloud Processing Parameters
 
 All distance thresholds are expressed relative to the bounding-box diagonal `D` of the cloud being processed, so the pipeline does not require a metric scale (photogrammetric reconstructions without ground control have an arbitrary scale).
 
 ### Plane detection (Analyze Plane)
-- Gravity direction: mean of the camera up-vectors parsed from `images.txt` (COLMAP text model). When `images.txt` is absent (for example an imported point cloud from a laser scanner), the vertical axis of the scene as the object is currently oriented is used instead; orient the object upright with the Transform panel first.
+- Gravity direction: mean of the camera up-vectors parsed from `images.txt` (COLMAP text model); this assumes the photographs were taken roughly upright, which for portrait captures requires the EXIF rotation that v1.0.1 applies during image conversion. When `images.txt` is absent (for example an imported point cloud from a laser scanner), the vertical axis of the scene as the object is currently oriented is used instead; orient the object upright with the Transform panel first.
 - Radial profile: points are projected along gravity into 50 height layers; per layer the mean, mean square and 90th percentile of the radial distance from the axis and a count-weighted combination are computed, and the layers with the largest radial extent identify candidate background regions.
 - Plane fit: RANSAC (`ransac_n` 3, 1000 iterations) on each candidate background subset with a distance threshold derived from `D/50` and the local layer statistics. Candidates whose normal deviates from gravity (|cos| < 0.7) are rejected; the best candidate maximizes the inlier ratio minus 0.1 times a height penalty. Two fallbacks (gravity normal at the profile height; gravity normal at the 2nd height percentile) keep the stage from failing.
 - Margin: a recommended cut distance above the plane is derived from the candidate and can be edited before removal.
@@ -205,6 +205,10 @@ Every stage above appends one JSON line to `stage_metrics.jsonl` in the object's
 ## Outputs of the reconstruction services
 
 For the COLMAP + OpenMVS path the output folder contains `dense_points.ply`, `cameras.txt`, `images.txt` (COLMAP text model), `reconstruction.json` (image count, sparse point count, timings) and, for `Dense Mesh`, the textured OpenMVS mesh (`.obj`, `.mtl`, `.jpg`). The AliceVision path writes `sparse_points.abc`, the dense cloud, the textured mesh and `reconstruction.json`. Console output of every service run is streamed into the reconstruction dialog and into `~/.meshwork/logs/app.log`.
+
+## Import and export
+
+Meshes are imported and exported as `.obj`, `.ply` or `.stl`, point clouds as `.ply` or `.obj` (vertices without faces); `.stl` stores triangles only and cannot represent a point cloud. Every processing stage reads and writes point clouds as `.ply`. Export applies to the objects selected in the Scene panel; with an empty selection it reports that a selection is needed instead of writing a file.
 
 ## Logging and UI latency
 

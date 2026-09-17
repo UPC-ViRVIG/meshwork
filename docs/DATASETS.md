@@ -40,6 +40,26 @@ The `full_dataset/` directory contains the 81 images used in the paper.
 
 **Attribution**: The dataset_flowerpot by Natowi, licensed under CC-BY-SA 4.0. This dataset uses the "Scale for Small-Object Photogrammetry" by Samantha Porter.
 
+## Limestone capital (architectural element)
+
+| Field | Value |
+|-------|-------|
+| Source | British Museum Digital Humanities |
+| URL | https://github.com/BritishMuseumDH/architecturalElement |
+| DOI | https://doi.org/10.5281/zenodo.885542 |
+| License | CC-BY-NC-SA (Creative Commons Attribution-NonCommercial-ShareAlike) |
+| Images | 68 photographs (Sony ILCE-6000, 16 mm) in `images/`, portrait orientation with an EXIF rotation tag; hand-drawn object masks for 58 of them in `masks/` |
+| Subject | Limestone column capital, 54 cm high, standing on a plinth a few centimetres from the corner of a gallery |
+| Author | Daniel Pett, British Museum |
+| Used for | Supporting plane smaller than the object (Example 4); the masks provide the point-level object labels used by `scripts/eval/object_loss_from_photomasks.py` |
+
+```bash
+git clone https://github.com/BritishMuseumDH/architecturalElement.git
+```
+The photographs are in the `images/` directory and the masks in `masks/`. The masks are stored in the raw pixel orientation of the photographs, so the evaluation script needs `--mask-transpose ROTATE_270` to match the upright images the reconstruction uses.
+
+**Attribution**: Photographs and models by Daniel Pett, Digital Humanities Lead, British Museum. Copyright Trustees of the British Museum.
+
 ## Socketed axe (Arreton Down)
 
 | Field | Value |

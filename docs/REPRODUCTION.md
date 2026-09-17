@@ -1,98 +1,82 @@
 # Reproducing Paper Results
 
-Step-by-step instructions for reproducing the results reported in the SoftwareX paper:
-
-> **MeshWork: A Python Framework for Assisted Geometry Processing in 3D Reconstruction Workflows**
+GUI steps and evaluation commands for the MeshWork SoftwareX paper.
 
 ## Prerequisites
 
-1. Complete the Quick Start in [README.md](../README.md): `pip install -r requirements.txt`, then `cd docker && ./build.sh && docker compose up -d`, then `python main.py` from the repository root.
-2. Inside `docker/`, `docker compose ps` lists `colmap-service` and `blender-service` as `healthy`. AliceVision is not needed for the examples below; on machines without an NVIDIA GPU start only `docker compose up -d colmap-service blender-service`.
+1. Install the Python dependencies and start the Docker services as described in [Configuration](CONFIGURATION.md). The examples use COLMAP + OpenMVS; only `colmap-service` and `blender-service` are needed. Check that both report `healthy` in `docker compose ps`.
+2. Start the GUI with `python main.py` from the repository root.
 
-Hardware used for the timings reported in the paper: Intel Core i7-10700K (8 cores / 16 threads), 32 GB RAM, NVIDIA GeForce RTX 3070 (8 GB VRAM). CPU-only operation was verified on a laptop with an Intel Core Ultra 7 155U and integrated graphics; timings on other hardware will differ.
-
-All examples use the COLMAP + OpenMVS path (`Tool: COLMAP` in the reconstruction dialog).
+Paper timings were measured on an Intel Core i7-10700K (8 cores / 16 threads), 32 GB RAM and an NVIDIA GeForce RTX 3070 (8 GB VRAM), using the [GPU configuration](CONFIGURATION.md#gpu-configuration). CPU-only operation was checked on an Intel Core Ultra 7 155U laptop. Timings and reconstructed point counts can vary with hardware and randomised processing steps.
 
 ## Datasets
 
-See [DATASETS.md](DATASETS.md) for sources, licenses and attribution.
-
-| Dataset | Download | Photographs |
-|---------|----------|-------------|
-| Alexander the Great | `git clone https://github.com/BritishMuseumDH/alexanderTheGreat.git` | `alexanderTheGreat/images/` (57) |
-| Flowerpot | `git clone https://github.com/natowi/dataset_flowerpot.git` | `dataset_flowerpot/full_dataset/` (81) |
-| Socketed axe | `git clone https://github.com/MicroPasts/socketed-axe-version2.git` | `socketed-axe-version2/photos/` (54); reference model in `models/` |
+Download the four datasets listed in [DATASETS.md](DATASETS.md), which includes image locations, licenses and attribution. Paths below use their repository names.
 
 ## GUI workflow
 
 ### Reconstruction (Tools > 3D Reconstruction..., Ctrl+R)
 
-1. Input > Browse...: select the folder containing the photographs.
-2. Output > Browse...: select an empty output folder. Everything produced for this dataset is written there.
-3. Settings: Tool `COLMAP`; Quality `Fast`, `Balanced` or `Quality`; Output `Point Cloud` (dense point cloud, the input of the point cloud pipeline) or `Dense Mesh` (OpenMVS textured mesh).
-4. Start. Progress and the console output of the services stream into the dialog; the viewport stays interactive while the job runs.
-5. Import loads the result into the scene. The output folder now contains `dense_points.ply`, `cameras.txt`, `images.txt`, `reconstruction.json` and, for `Dense Mesh`, the textured mesh (`.obj`, `.mtl`, `.jpg`).
+1. Set Input to the photograph folder and Output to a project folder.
+2. Select Tool `COLMAP`, the Quality preset and either `Point Cloud` or `Dense Mesh`, as specified in each example.
+3. Press Start. Progress and service output appear in the dialog.
+4. Press Import to load the result. For `Dense Mesh` this imports the mesh; use File > Import to load `dense_points.ply` for point-cloud processing.
+
+Each run writes to `<project folder>/recon_<timestamp>/result/`, including the dense cloud, camera poses and `reconstruction.json`. Images are copied to `<project folder>/converted/` with EXIF orientation applied (v1.0.1 onward). See [output files](CONFIGURATION.md#outputs-of-the-reconstruction-services) for details.
 
 ### Point cloud pipeline (Tools panel, Point Cloud group)
 
-Select the object(s) in the Scene panel, press the tool button, adjust the parameters that appear, then Apply (Cancel closes the tool without changes).
+Select objects in the Scene panel, choose a tool, check its parameters and press Apply.
 
-| Tool | What it does | Result |
-|------|--------------|--------|
-| Analyze Plane | Estimates gravity from `images.txt`, detects the supporting plane, rotates the object upright and fills in the recommended Margin | `1.stage1_params.yaml`, `1.radial_profile.csv`, `1.plane_candidates.csv` |
-| Remove Plane | Removes points closer than Margin to the plane, then `DBSCAN` or `Statistical` outlier removal | new object `2.cleaned_m<margin>` in a canonical frame (plane at z = 0) |
-| Align Clouds | Requires two selected objects: the one listed first in the Scene panel is moved onto the other (FPFH + RANSAC initialization, multi-scale ICP with scale estimation). Pre-align roughly with the Transform panel when the scans are far apart | transform of the moving object updated; `3.alignment_params.yaml` in its folder |
-| Merge Clouds | Requires two selected objects: concatenates them in the frame of the one listed second in the Scene panel and applies the ticked filters | new object `4.merged_<filters>` |
-| Generate Mesh | Poisson reconstruction with the given Depth, optional hole filling and smoothing | new object `5.mesh_d<depth>` (vertex colours) |
+| Tool | Use |
+|------|-----|
+| Analyze Plane | Estimates gravity from camera poses, detects the support, rotates the object upright and recommends a cut Margin. |
+| Remove Plane | Removes points whose signed distance to the plane is below Margin, then applies `DBSCAN` or `Statistical` filtering. The cleaned cloud is centred at its centroid, with the support normal along z. |
+| Align Clouds | Select two clouds; the first listed in the Scene panel moves onto the second. For other datasets, use the Transform panel for coarse alignment if needed. |
+| Merge Clouds | Select two clouds and choose the filters. The merged cloud uses the second cloud's frame. |
+| Generate Mesh | Produces a Poisson mesh with vertex colours. |
 
-File > Export... saves the selected object as `.obj`, `.ply` or `.stl`; File > Save stores the scene as a `.blend` project.
+For the paper meshes, use Depth `9`, Fill holes enabled, Max hole size `400`, Simplify to `300000` triangles and Smooth iterations `1`. Parameter details and saved filenames are in [Configuration](CONFIGURATION.md#point-cloud-processing-parameters).
+
+File > Export saves the selected objects: meshes as OBJ, PLY or STL; point clouds as PLY or vertex-only OBJ. File > Save stores the scene as a Blender project.
 
 ### Metrics
 
-Every pipeline stage appends its elapsed time and key metrics to `stage_metrics.jsonl` in the output folder of the object it processed. Collect them for the paper tables with
+Processing stages append timings and metrics to `stage_metrics.jsonl` beside the input cloud. Run evaluation commands from the MeshWork repository root, replacing the example paths with your result folders and filenames.
 
 ```bash
-python scripts/eval/collect_metrics.py <output folder> [<output folder> ...] --last-per-stage --format latex
+python scripts/eval/collect_metrics.py "/path/to/run/result" --format latex
 ```
 
-The UI event-loop latency during processing is logged to `~/.meshwork/logs/ui_latency.csv` (see [CONFIGURATION.md](CONFIGURATION.md)).
+`--last-per-stage` keeps the last record for each stage and object in each result folder. For repeated operations, sum the relevant timings separately: the paper's axe registration time includes two successive passes. UI latency is logged separately; see [Logging and UI latency](CONFIGURATION.md#logging-and-ui-latency).
 
 ## Example 1: Alexander the Great - baseline quality
 
-**Objective**: end-to-end reconstruction quality on clean museum data.
+1. Reconstruct `alexanderTheGreat/images/` with Quality `Quality` and Output `Dense Mesh`.
+2. Import the result. Export as OBJ to keep the photo texture.
 
-1. Reconstruction: photographs `alexanderTheGreat/images/`, Quality `Quality`, Output `Dense Mesh`.
-2. Import the result and inspect facial features, hair and drapery folds.
-3. File > Export... as `.obj` to keep the photo texture.
-
-**Expected output**: a watertight textured mesh of approximately 280,000 vertices produced in about 18 minutes on the hardware listed above. `reconstruction.json` records the image count, the sparse point count and the timings of the reconstruction stages.
+The reported run produced a textured mesh of approximately 280,000 vertices in 6.5 minutes. Image counts and settings are saved in `reconstruction.json`; timings are reported in the reconstruction log.
 
 ## Example 2: Flowerpot - background removal
 
-**Objective**: automated supporting-plane detection and cleaning, and a comparison of two mesh generation strategies.
+1. Reconstruct all 81 photographs in `dataset_flowerpot/full_dataset/` with Quality `Balanced` and Output `Point Cloud`.
+2. Import and select `dense_points`; run Analyze Plane, then Remove Plane with Method `DBSCAN`.
+3. Select the cleaned cloud and run Generate Mesh with the settings above.
+4. To compare outputs, repeat reconstruction with Output `Dense Mesh`.
 
-1. Reconstruction: all 81 photographs of `dataset_flowerpot/full_dataset/`, Quality `Balanced`, Output `Point Cloud`.
-2. Import; select the imported point cloud (`dense_points`); Analyze Plane > Apply. The object is rotated upright and Margin is filled in with the recommended value.
-3. Remove Plane with Method `DBSCAN` > Apply. `2.cleaned_m<margin>` appears without the table and the supporting geometry.
-4. Select the cleaned object; Generate Mesh (Depth 9) > Apply. This is method A: cleaned point cloud + Poisson reconstruction (vertex-coloured mesh).
-5. Method B: run the reconstruction again with Output `Dense Mesh` to obtain the OpenMVS mesh with photo-based textures.
+The cleaned Poisson mesh removes the table but shows colour interpolation near the cut. The OpenMVS mesh keeps the table and photographic texture. After merging scans, the pipeline uses Poisson because the merged cloud no longer has the photo correspondence needed for texturing.
 
-**Comparison**: method A yields a closed surface but shows colour interpolation artifacts near the removed table region; method B preserves higher visual fidelity through photo texturing and is preferred whenever the photo-mesh correspondence is intact. Method A is required when that correspondence is lost, for example after multi-scan merging (Example 3).
-
-**Ablation** (plane detector vs. plain full-cloud RANSAC on the same cloud):
+Compare plane detection with full-cloud RANSAC:
 
 ```bash
-python scripts/eval/ablation_plane.py <output folder>
-python scripts/eval/ablation_plane.py <output folder> --gt-background <table.ply>
+python scripts/eval/ablation_plane.py "/path/to/flowerpot/result"
 ```
 
-`<table.ply>` is a table-only cloud isolated by hand (select and delete the object points in the GUI, then File > Export...); with it the script also reports the normal-angle and offset errors of both planes and the precision/recall of the removed points.
+Optionally add `--gt-background "/path/to/table.ply"` to measure normal-angle and offset errors, and removal precision/recall. Prepare this table-only cloud with an external point-cloud editor, keeping the dense cloud's coordinate frame.
 
 ## Example 3: Socketed axe - multi-scan assembly
 
-**Objective**: the complete assisted multi-scan pipeline (plane removal, registration with scale estimation, merging, meshing) on a real archaeological artifact.
-
-1. The 54 photographs (`IMG_8835.JPG` to `IMG_8888.JPG`) come from a single capture session. Split them into two disjoint subsets and reconstruct each into its own output folder (Quality `Balanced`, Output `Point Cloud`): subset A = `IMG_8835`-`IMG_8860` (26 images), subset B = `IMG_8861`-`IMG_8888` (28 images).
+1. Split the 54 photographs from one capture session into subsets A (`IMG_8835`–`IMG_8860`, 26 images) and B (`IMG_8861`–`IMG_8888`, 28 images):
 
    ```bash
    cd socketed-axe-version2
@@ -101,39 +85,57 @@ python scripts/eval/ablation_plane.py <output folder> --gt-background <table.ply
    for n in $(seq 8861 8888); do cp photos/IMG_$n.JPG scanB/; done
    ```
 
-   The two partial reconstructions therefore have independent, slightly different scales and reference frames, which is the situation the registration stage is designed for.
-2. For each imported scan: Analyze Plane > Apply, then Remove Plane (`DBSCAN`) > Apply. Both cleaned scans are now in canonical frames (table at z = 0, centroid at the origin).
-3. Coarse alignment: the cleaned scan listed first in the Scene panel (scan A, imported first) is the one that will move. Select it and rotate/translate it with the Transform panel until it roughly overlaps scan B.
-4. Select both cleaned scans; Align Clouds > Apply. Scan A is registered onto scan B. `3.alignment_params.yaml` in scan A's folder contains the fitness, the inlier RMSE, the initialization that won (RANSAC or identity), the per-level records and the estimated scale factor.
-5. Keep the same selection; Merge Clouds with `DBSCAN outlier removal` and `Statistical outlier removal` ticked > Apply.
-6. Select the merged object; Generate Mesh (Depth 9) > Apply. File > Export... to save the result.
+2. Reconstruct each subset into its own project folder with Quality `Balanced` and Output `Point Cloud`.
+3. Import A before B. For each cloud, run Analyze Plane, then Remove Plane with Method `DBSCAN`.
+4. Select both cleaned clouds, with A first in the Scene panel, and apply Align Clouds twice. The reported workflow uses two successive passes without manual pre-alignment.
+5. Merge with `DBSCAN outlier removal`, `Statistical outlier removal` and `Normal consistency filter` enabled; leave radius filtering off.
+6. Select the merged cloud and run Generate Mesh with the settings above. The saved mesh is `5.mesh_d9_s300000.ply`; repeat runs may add a suffix.
 
-The final mesh is a Poisson surface with vertex colours; the per-scan OpenMVS meshes keep their photo textures, but the merged cloud has no photo correspondence any more (see the limitations discussed in the paper).
-
-**Ablations and reference comparison**:
+Run the scale ablation on the cleaned files, without the GUI alignment transforms:
 
 ```bash
-# multi-scale ICP with and without the scale search
-python scripts/eval/ablation_scale.py <scan A folder>/2.cleaned_m<margin>.ply <scan B folder>/2.cleaned_m<margin>.ply --source-transform coarse.json
-
-# distance of the MeshWork result to the PhotoScan reference model distributed with the dataset
-python scripts/eval/compare_reference.py <scan A folder>/5.mesh_d9.ply socketed-axe-version2/models/Socketed_axe_DPC.ply
+python scripts/eval/ablation_scale.py "/path/to/scanA/result/2.cleaned_m0.068.ply" \
+    "/path/to/scanB/result/2.cleaned_m0.031.ply"
 ```
 
-`coarse.json` holds the transform of scan A after step 3 as shown in the Transform panel (`{"location": [x, y, z], "rotation": [rx, ry, rz], "scale": [sx, sy, sz]}`, rotation in radians). `compare_reference.py` aligns the result to the reference with a similarity transform and reports nearest-neighbour distances as fractions of the reference bounding-box diagonal (`--reference-diagonal-mm` converts them to millimetres when the physical size is known).
+Use the filenames produced by your run if the recommended margins differ. For the scale-perturbation experiments, add `--source-transform scale.json`, containing `{"location": [0, 0, 0], "rotation": [0, 0, 0], "scale": [0.9, 0.9, 0.9]}`. Test factors `0.9`, `1.1` and `0.8`, each five times with a separate `--out` path. This changes the cloud's scale, not the acquisition conditions.
+
+Compare the merged mesh with the dataset's PhotoScan reference:
+
+```bash
+python scripts/eval/compare_reference.py "/path/to/scanA/result/5.mesh_d9_s300000.ply" \
+    "/path/to/socketed-axe-version2/models/Socketed_axe_DPC.ply" \
+    --reference-diagonal-mm 140
+```
+
+The comparison uses a similarity alignment and reports distances relative to the reference diagonal. The dataset's enabled 0.080 m scale bar supports the 140 mm diagonal used for conversion. Both models use the same photographs, so this measures agreement between reconstructions, not absolute accuracy.
+
+## Example 4: Limestone capital - a support smaller than the object
+
+1. Reconstruct `architecturalElement/images/` with Quality `Balanced` and Output `Dense Mesh`.
+2. Use File > Import to load the run's `dense_points.ply`. Select it and run Analyze Plane.
+3. Run Remove Plane with Method `DBSCAN`, then Generate Mesh with the settings above.
+
+The gallery walls are barely reconstructed, leaving a small ring of plinth points below the capital. In the reported ablation, full-cloud RANSAC cuts through the capital and removes 49.8% of mask-labelled object points; the guided cut removes 18.8%. The recommended margin still removes part of the base. Reduce it if preserving the base is the aim; the reported ablation uses the unadjusted recommendation.
+
+```bash
+python scripts/eval/ablation_plane.py "/path/to/capital/result"
+python scripts/eval/object_loss_from_photomasks.py "/path/to/capital/result" \
+    "/path/to/architecturalElement/masks" \
+    "/path/to/capital/result/eval_plane/ablation_plane.json" \
+    --mask-transpose ROTATE_270
+python scripts/eval/plot_plane_cuts.py "/path/to/capital/result" --out capital_planes.png
+```
+
+The mask rotation matches the EXIF rotation applied to the photographs. Object labels use majority voting from projected masks, requiring at least three registered views by default. They estimate object loss and depend on mask and camera-pose accuracy.
 
 ## Troubleshooting
 
-**Docker services do not start**: inside `docker/`, check `docker compose logs`. Common causes: ports 50051-50053 in use, insufficient disk space for the images, `.runtime/` owned by root from a previous build (re-run `./build.sh`).
-
-**The GUI cannot connect to the services**: verify `docker compose ps` shows `healthy` and that the ports are published (`127.0.0.1:50051-50053`). Without a `.env` file the client uses those loopback endpoints. If the endpoints were changed to `unix:` socket paths and the connection fails with `Permission denied`, the running containers predate the socket permission fix; rebuild them (`cd docker && docker compose build && docker compose up -d`) or switch back to TCP.
-
-**Reconstruction stops with "Too many pings"**: the gRPC server closed the connection because the client keepalive was faster than the server tolerated during a stage that produces no output for minutes (exhaustive feature matching on larger image sets). Rebuild the service images so they pick up the current keepalive policy (`cd docker && docker compose build && docker compose up -d`), or run the services over Unix domain sockets, where no keepalive pings are sent.
-
-**Reconstruction fails in the dense stage**: ensure enough RAM (16 GB minimum, 32 GB recommended for `Quality`). Use `Balanced` or `Fast` to reduce memory usage.
-
-**Analyze Plane reports that images.txt is missing**: the object was not produced by the reconstruction dialog (for example an imported laser scan). Orient it upright with the Transform panel; the stage then uses the scene vertical axis as the gravity direction.
-
-**GPU not detected by AliceVision**: verify that the NVIDIA Container Toolkit is installed and that `docker compose exec alicevision-service nvidia-smi` works.
-
-**Slow processing on CPU**: COLMAP + OpenMVS runs CPU-only but considerably slower; the timings in the paper assume the hardware listed above.
+| Problem | Check |
+|---------|-------|
+| Services do not start | Run `docker compose logs` from `docker/`; check port conflicts on 50051–50053, disk space and `.runtime/` permissions. |
+| GUI cannot connect | Check `docker compose ps`, published ports and the endpoint settings in the repository `.env`. For socket permission errors, use loopback TCP or rebuild the service images. |
+| `Too many pings` | Check the client/server periods in [Keepalive](CONFIGURATION.md#keepalive); rebuild service images after changes. |
+| Dense reconstruction runs out of memory | Try `Balanced` or `Fast`; `Quality` needs more RAM. |
+| `images.txt` is missing | For an imported cloud without camera poses, orient it upright with Transform; Analyze Plane then uses the scene's vertical axis. |
+| AliceVision cannot detect the GPU | Check the NVIDIA Container Toolkit and run `docker compose exec alicevision-service nvidia-smi`. |

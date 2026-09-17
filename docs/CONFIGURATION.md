@@ -1,6 +1,6 @@
 # Configuration
 
-Setup instructions for MeshWork: Python environment, Docker services, deployment scenarios, quality presets and the parameter reference for the point cloud pipeline.
+Setup, deployment and processing parameters for MeshWork.
 
 ## Python Environment
 
@@ -12,9 +12,7 @@ source venv/bin/activate    # Linux
 pip install -r requirements.txt
 ```
 
-Key dependencies: PySide6 and pyvistaqt (GUI), Open3D and PyMeshLab (point cloud and mesh processing), PyVista (visualization), grpcio / grpcio-tools (service communication), numpy, PyYAML.
-
-The gRPC stubs (`server/meshwork_pb2.py`, `server/meshwork_pb2_grpc.py`) are generated automatically the first time the `server` package is imported if `grpcio-tools` is installed. `docker/build.sh` regenerates them as well.
+Missing gRPC stubs (`server/meshwork_pb2.py`, `server/meshwork_pb2_grpc.py`) are generated on import using `grpcio-tools`. `docker/build.sh` also regenerates them.
 
 ## Docker Services
 
@@ -32,11 +30,14 @@ All `docker compose` commands below are run from the `docker/` directory, where 
 
 ```bash
 cd docker
-./build.sh              # CPU mode
-GPU=true ./build.sh     # NVIDIA GPU mode (requires the NVIDIA Container Toolkit)
+test -f .env || cp .env.example .env
+# For NVIDIA GPU mode, set GPU=true in .env before building.
+./build.sh
 ```
 
-`build.sh` checks for `docker compose` and `grpcio-tools`, generates the gRPC stubs, recreates `../.runtime/{socks,logs,workspace}` (the shared workspace mounted into every container), copies `.env.example` to `.env` when no `.env` exists, and builds the images. Options: `--clean` (rebuild without cache), `--pull` (refresh base images first), and an optional subset of `blender colmap alicevision`. The first build takes 30-60 minutes depending on network speed and hardware.
+`build.sh` requires Docker Compose and `grpcio-tools`. It generates the gRPC stubs and builds the images. Options: `--clean` (remove existing service images before building), `--pull` (refresh base images), and a subset of `blender colmap alicevision`. GPU mode also requires the NVIDIA Container Toolkit.
+
+**Each build stops the services and deletes `../.runtime/`, including its shared workspace and logs.** Save any files you need before rebuilding.
 
 ### Starting and checking services
 
@@ -83,26 +84,26 @@ docker run --rm --gpus all nvidia/cuda:12.0-base nvidia-smi
 The GUI loads settings in this order, later sources overriding earlier ones:
 
 1. Defaults in `config.py`.
-2. `~/.meshwork/config.yaml` (`Documents/Meshwork/config.yaml` on Windows), written on exit and editable by hand.
+2. `~/.meshwork/config.yaml`, written on exit and editable by hand.
 3. A `.env` file in the repository root (see `.env.example`).
 4. Environment variables.
 
-Values coming from `.env` or the environment apply to the running session only; they are never written back to `~/.meshwork/config.yaml`.
+Environment overrides apply to the session and are not saved to `config.yaml`.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MESHWORK_BLENDER` | `unix:.runtime/socks/blender.sock` | Blender service endpoint |
-| `MESHWORK_COLMAP` | `unix:.runtime/socks/colmap.sock` | COLMAP service endpoint |
-| `MESHWORK_ALICEVISION` | `unix:.runtime/socks/alicevision.sock` | AliceVision service endpoint |
+| `MESHWORK_BLENDER` | `127.0.0.1:50051` | Blender service endpoint |
+| `MESHWORK_COLMAP` | `127.0.0.1:50052` | COLMAP service endpoint |
+| `MESHWORK_ALICEVISION` | `127.0.0.1:50053` | AliceVision service endpoint |
 | `MESHWORK_LOG_LEVEL` | `INFO` | Logging verbosity (DEBUG, INFO, WARNING, ERROR) |
 
 Endpoints are either `<host>:<port>` or `unix:<socket path>`.
 
 ### Transport
 
-The default is loopback TCP, which behaves the same on Linux, Windows and macOS and uses one code path for local and remote deployments. The containers publish their ports on `127.0.0.1` only, so the services are reachable from this machine and nowhere else.
+The default is loopback TCP: the containers publish their ports on `127.0.0.1`, accessible from the local machine.
 
-The services also listen on Unix domain sockets in `.runtime/socks/` (Linux only, marginally lower overhead). To use them, point the endpoints at the socket paths:
+On Linux, Unix domain sockets are an alternative. Set these endpoints in the repository `.env`:
 
 ```
 MESHWORK_BLENDER=unix:.runtime/socks/blender.sock
@@ -110,19 +111,19 @@ MESHWORK_COLMAP=unix:.runtime/socks/colmap.sock
 MESHWORK_ALICEVISION=unix:.runtime/socks/alicevision.sock
 ```
 
-Relative socket paths are resolved against the working directory, so start the GUI from the repository root. The containers run as root and relax the socket permissions at startup so that the desktop user can connect; images built before this was added create sockets that only root can use, which shows up as `connect failed: Permission denied`.
+Relative socket paths are resolved against the working directory; start the GUI from the repository root.
 
-**Do not publish the service ports on a public interface.** The services expose `Exec` and `PythonExec`, which run arbitrary commands and Python code inside the containers with the shared workspace mounted, and gRPC is unauthenticated here. Keep `MESHWORK_BIND_ADDR=127.0.0.1` unless the port is protected by other means, and reach a remote server over an SSH tunnel or a private network rather than by opening the port to the internet.
+**Do not expose service ports to the internet.** gRPC is unauthenticated, and `Exec` / `PythonExec` can run arbitrary code in containers with the shared workspace mounted. Keep `MESHWORK_BIND_ADDR=127.0.0.1` and use an SSH tunnel for remote access, or restrict direct connections with a firewall.
 
 ### Keepalive
 
-Over TCP the client sends HTTP/2 keepalive pings every `comm.grpc.keepalive_time_ms` (30 s) so that a dead connection is detected during long operations. The services accept pings no more often than `comm.grpc.min_ping_interval_ms` (10 s) and do not count ping strikes, so stages that produce no output for minutes (exhaustive feature matching, dense reconstruction) are not terminated. If these two settings are changed, keep the server tolerance below the client period, otherwise gRPC aborts the call with `Too many pings`. Unix domain sockets use no keepalive at all. Changing the values requires rebuilding the service images (`cd docker && docker compose build`).
+TCP keepalive uses `comm.grpc.keepalive_time_ms` (30 s) and `comm.grpc.min_ping_interval_ms` (10 s). Keep the server minimum ping interval below the client period to avoid `Too many pings` errors during long operations. Unix-socket clients omit keepalive options. Changes to server defaults in `config.py` require rebuilding the service images (`cd docker && docker compose build`).
 
 ## Deployment Scenarios
 
 ### Local (single machine)
 
-All services run on the same machine and are reached over loopback TCP. No configuration changes are needed.
+Use the default endpoints after starting the Docker services.
 
 ### Remote GPU server
 
@@ -132,17 +133,19 @@ On the server:
 ```bash
 git clone https://github.com/UPC-ViRVIG/meshwork.git
 cd meshwork/docker
-GPU=true ./build.sh
+test -f .env || cp .env.example .env
+# Set GPU=true in .env.
+./build.sh
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 ```
 
-The server publishes its ports on `127.0.0.1` by default. The safe way to reach them from the client is an SSH tunnel:
+On the client, forward the server ports through SSH:
 
 ```bash
 ssh -N -L 50051:127.0.0.1:50051 -L 50052:127.0.0.1:50052 -L 50053:127.0.0.1:50053 user@server
 ```
 
-The client then keeps the default `127.0.0.1` endpoints and needs no `.env` at all. To expose the ports directly instead, set `MESHWORK_BIND_ADDR=0.0.0.0` in `docker/.env` on the server, restrict access with a firewall, and create `.env` in the repository root on the client:
+Keep the default client endpoints when using the tunnel. For direct access, set `MESHWORK_BIND_ADDR=0.0.0.0` in the server's `docker/.env`, restrict access with a firewall, and set the client's repository `.env`:
 
 ```
 MESHWORK_BLENDER=<server-ip>:50051
@@ -150,11 +153,11 @@ MESHWORK_COLMAP=<server-ip>:50052
 MESHWORK_ALICEVISION=<server-ip>:50053
 ```
 
-Start the GUI with `python main.py`. Images and results are transferred over gRPC (chunked streaming), so network bandwidth affects upload and download times for large datasets.
+Start the GUI from the repository root with `python main.py`. Images and results are transferred over gRPC.
 
 ## Quality Presets
 
-The reconstruction dialog (Tools > 3D Reconstruction) offers the tools `COLMAP` (COLMAP + OpenMVS) and `AliceVision`, the quality presets `Fast`, `Balanced` (default) and `Quality`, and the outputs `Point Cloud` (dense point cloud) or `Dense Mesh` (textured mesh). Each preset maps to a parameter set per tool in `config.py` (`reconstruction` section); the COLMAP + OpenMVS mapping is:
+In **Tools > 3D Reconstruction**, choose `COLMAP` (COLMAP + OpenMVS) or `AliceVision`, a quality preset (`Fast`, `Balanced` or `Quality`), and an output (`Point Cloud` or textured `Dense Mesh`). `Balanced` is the default. Presets are defined under `reconstruction` in `config.py`; COLMAP + OpenMVS uses:
 
 | Preset | Max image size (SfM) | Max features / image | Dense resolution level | Densify iterations | Mesh refinement scales |
 |--------|----------------------|----------------------|------------------------|--------------------|------------------------|
@@ -162,26 +165,31 @@ The reconstruction dialog (Tools > 3D Reconstruction) offers the tools `COLMAP` 
 | Balanced | 1600 px | 8192 | 3 (max 1600 px) | 2 | 2 |
 | Quality | 2048 px | 16384 | 2 (max 1600 px) | 3 | 2 |
 
-Any value can be overridden per preset in `~/.meshwork/config.yaml` under `reconstruction.colmap.quality_levels` or `reconstruction.alicevision.quality_levels`. Processing time depends strongly on hardware; the timings reported in the paper are listed in [REPRODUCTION.md](REPRODUCTION.md).
+Images are copied to `<output folder>/converted/` before upload, with EXIF orientation applied. Override preset values in `~/.meshwork/config.yaml` under `reconstruction.colmap.quality_levels` or `reconstruction.alicevision.quality_levels`. See [REPRODUCTION.md](REPRODUCTION.md) for the paper's runs.
 
 ## Point Cloud Processing Parameters
 
-All distance thresholds are expressed relative to the bounding-box diagonal `D` of the cloud being processed, so the pipeline does not require a metric scale (photogrammetric reconstructions without ground control have an arbitrary scale).
+The main distance thresholds use the cloud's bounding-box diagonal `D`. Plane detection also uses fixed safety bounds in scene units, listed below. Models without ground control have no metric scale.
+
+Output names below are patterns: `<...>` denotes a parameter value or filter selection. Repeated runs can add a numeric suffix to avoid overwriting existing results.
 
 ### Plane detection (Analyze Plane)
-- Gravity direction: mean of the camera up-vectors parsed from `images.txt` (COLMAP text model). When `images.txt` is absent (for example an imported point cloud from a laser scanner), the vertical axis of the scene as the object is currently oriented is used instead; orient the object upright with the Transform panel first.
-- Radial profile: points are projected along gravity into 50 height layers; per layer the mean, mean square and 90th percentile of the radial distance from the axis and a count-weighted combination are computed, and the layers with the largest radial extent identify candidate background regions.
-- Plane fit: RANSAC (`ransac_n` 3, 1000 iterations) on each candidate background subset with a distance threshold derived from `D/50` and the local layer statistics. Candidates whose normal deviates from gravity (|cos| < 0.7) are rejected; the best candidate maximizes the inlier ratio minus 0.1 times a height penalty. Two fallbacks (gravity normal at the profile height; gravity normal at the 2nd height percentile) keep the stage from failing.
-- Margin: a recommended cut distance above the plane is derived from the candidate and can be edited before removal.
-- Outputs: `1.stage1_params.yaml`, `1.radial_profile.csv`, `1.plane_candidates.csv`.
+
+- Gravity: negated, normalized mean of the camera up-vectors in `images.txt` (COLMAP text model). This assumes upright photographs after EXIF orientation. Without camera poses, gravity follows the scene vertical axis; orient the object upright in the Transform panel first.
+- Radial profiles: 50 height layers along gravity; each records the mean, mean square and 90th percentile of radial distance, plus the mean multiplied by `log(1 + point count)`. Profile changes identify candidate support regions.
+- Plane fit: RANSAC (`ransac_n` 3, 1000 iterations) on candidate subsets of at least 500 points. The threshold is one quarter of the subset's height extent, clipped to `[0.001, D/50]`. Candidates with |cos(normal, gravity)| < 0.7 are rejected; the score is inlier ratio minus 0.1 times a height penalty. If no candidate passes, gravity-aligned fallbacks use the profile boundary or the 2nd height percentile.
+- Margin: 99th percentile of candidate-point signed distances above the plane, plus half a height layer, clipped to `[0.005, 0.5]` scene units. The two fallbacks use bounds `[0.01, 0.4]` and `[0.02, 0.4]`. Inspect and adjust the margin before removal.
+- Outputs: `1.stage1_params.yaml`, `1.radial_profile.csv`, `1.radial_profile_candidates_raw.csv`, `1.plane_candidates.csv`.
 
 ### Plane removal (Remove Plane)
+
 - Points with signed distance to the plane below the margin are removed.
 - Outlier removal: DBSCAN (eps = 0.02 D, minimum cluster size 0.05 % of the points, computed on a D/500 voxel downsample) or statistical (20 neighbours, 2.0 standard deviations).
-- The result is written in a canonical frame (plane at z = 0, centroid at the origin) as `2.cleaned_m<margin>.ply` with `2.removal_m<margin>.yaml`.
+- The result is centered at its centroid with the support normal along z, and written as `2.cleaned_m<margin>.ply` with `2.removal_m<margin>.yaml`.
 
 ### Registration (Align Clouds)
-- Downsampling voxel v = D/200 (average of both clouds); normals from 30 neighbours within 2v.
+
+- Voxel size v = D/200, using the average diagonal of both clouds; each voxel is represented by its point centroid. Normals use 30 neighbours within 2v.
 - Global initialization: FPFH features (radius 5v) with RANSAC (distance 1.5v, 100000 iterations, confidence 0.999), compared against the identity with 10 point-to-plane ICP iterations each; the lower inlier RMSE is kept.
 - Multi-scale point-to-plane ICP at voxel sizes v, 0.6v and 0.3v, at most 50 iterations per level, correspondence distance 2 voxels.
 - Scale estimation: after every level the candidate factors 0.95, 0.97, 0.99, 1.0, 1.01, 1.03 and 1.05 are tested with 3 ICP iterations and the factor with the lowest RMSE is applied; the cumulative factor is clipped to [0.8, 1.5].
@@ -189,22 +197,28 @@ All distance thresholds are expressed relative to the bounding-box diagonal `D` 
 - Outputs: `3.alignment_params.yaml` (fitness, inlier RMSE, initialization, per-level records, cumulative scale, resulting transform).
 
 ### Merge and cleaning (Merge Clouds)
+
 - Both clouds are transformed into the target frame and concatenated; duplicates are removed with a D/1000 voxel, the result is downsampled with a D/800 voxel.
 - Optional filters: DBSCAN outlier removal, statistical outlier removal (20 neighbours, 2.0 standard deviations), normal consistency (30 neighbours, 20 degrees), radius outlier removal (16 neighbours within 5 downsampling voxels).
 - Outputs: `4.merged_<filters>.ply`, `4.merged_<filters>_params.yml`, `4.merged_<filters>_meta.yml`.
 
 ### Poisson reconstruction (Generate Mesh)
+
 - Screened Poisson reconstruction with octree depth 9 by default (adjustable in the panel), scale 1.1; vertices in the lowest 1 % of the density distribution are pruned.
 - Optional hole filling (PyMeshLab, maximum hole size in edges) and Laplacian smoothing.
 - The mesh carries vertex colours interpolated from the point cloud; photo textures are only available on meshes produced directly by the reconstruction services (`Dense Mesh` output).
-- Outputs: `5.mesh_d<depth>.ply`, `5.meshing_d<depth>.yml`.
+- Outputs: `5.mesh_d<depth>.ply` and `5.meshing_d<depth>.yml`; simplification adds `_s<target>` before the extension.
 
 ### Stage metrics
 Every stage above appends one JSON line to `stage_metrics.jsonl` in the object's source directory with the stage name, elapsed wall-clock time and its key metrics. `python scripts/eval/collect_metrics.py <folder>` renders these files as a table.
 
 ## Outputs of the reconstruction services
 
-For the COLMAP + OpenMVS path the output folder contains `dense_points.ply`, `cameras.txt`, `images.txt` (COLMAP text model), `reconstruction.json` (image count, sparse point count, timings) and, for `Dense Mesh`, the textured OpenMVS mesh (`.obj`, `.mtl`, `.jpg`). The AliceVision path writes `sparse_points.abc`, the dense cloud, the textured mesh and `reconstruction.json`. Console output of every service run is streamed into the reconstruction dialog and into `~/.meshwork/logs/app.log`.
+Each reconstruction writes to `<project folder>/recon_<timestamp>/result/`. For COLMAP + OpenMVS this directory contains `dense_points.ply`, `cameras.txt`, `images.txt` (COLMAP text model), `reconstruction.json` (image count, sparse point count, engine settings) and, for `Dense Mesh`, the textured OpenMVS mesh (`.obj`, `.mtl`, `.jpg`). The AliceVision path writes `sparse_points.abc`, the dense cloud, the textured mesh and `reconstruction.json`. Console output of every service run is streamed into the reconstruction dialog and into `~/.meshwork/logs/app.log`.
+
+## Import and export
+
+Meshes support `.obj`, `.ply` and `.stl`; point clouds support `.ply` and vertex-only `.obj`. Processing stages use `.ply`. To export, select the objects in the Scene panel first.
 
 ## Logging and UI latency
 
@@ -214,13 +228,16 @@ For the COLMAP + OpenMVS path the output folder contains `dense_points.ply`, `ca
 ## Platform Notes
 
 ### Linux (Ubuntu 22.04+, Mint 22)
-- Fully supported, recommended platform.
-- Unix domain sockets are used for local deployment.
+
+- Tested platform.
+- Local services use loopback TCP by default; Unix domain sockets are optional.
 
 ### Windows 10+
+
 - Supported via Docker Desktop with the WSL2 backend.
-- Use TCP endpoints (`MESHWORK_COLMAP=127.0.0.1:50052` etc. in the repository `.env`); named pipes replace Unix domain sockets for the local Blender connection.
-- Configuration and logs are stored under `Documents/Meshwork/`.
+- Use the default loopback TCP endpoints.
+- Logs and temporary files are stored under `Documents/Meshwork/`; configuration remains in `~/.meshwork/config.yaml`.
 
 ### macOS
+
 - Not officially supported (no Docker GPU passthrough). The COLMAP + OpenMVS path can run CPU-only through Docker Desktop with TCP endpoints, but this configuration is untested.

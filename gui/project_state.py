@@ -5,6 +5,7 @@ from typing import Optional, Dict, Any
 import os
 from pathlib import Path
 from logger import get_logger
+from core.coredata import get_scene_manager
 from core.utils import (
     check_file_read_permission,
     check_file_write_permission,
@@ -124,6 +125,11 @@ class ProjectState(QObject):
 
     def export_file(self):
         if not self.try_lock():
+            return
+
+        if not get_scene_manager().get_selected_names():
+            QMessageBox.warning(None, "Export", "Select at least one object in the Scene panel before exporting.")
+            self.unlock()
             return
 
         file_path = self._show_permission_error_and_retry("export")
@@ -262,6 +268,7 @@ class ProjectState(QObject):
             self.logger.info("File imported successfully")
         else:
             self.logger.error(f"Failed to import file: {error}")
+            QMessageBox.warning(None, "Import failed", error or "Unknown error")
 
         self.unlock()
 
@@ -273,6 +280,7 @@ class ProjectState(QObject):
             self.logger.info("File exported successfully")
         else:
             self.logger.error(f"Failed to export file: {error}")
+            QMessageBox.warning(None, "Export failed", error or "Unknown error")
 
         self.unlock()
 

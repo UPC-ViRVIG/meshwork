@@ -1,31 +1,15 @@
 # MeshWork
 
-A Python framework for assisted geometry processing in 3D reconstruction workflows.
+MeshWork is a Python desktop application for reconstructing objects from photographs and processing the resulting point clouds and meshes. It focuses on close-range objects, such as archaeological finds photographed on a table or plinth, where reconstructions often include the supporting surface and may cover only part of the object.
 
-MeshWork integrates heterogeneous photogrammetry and mesh-processing tools (COLMAP, AliceVision, OpenMVS, Blender) into a unified, semi-automated pipeline with an interactive GUI. It is designed for cultural heritage digitization, architectural documentation, and digital content creation.
+Users inspect intermediate results, adjust parameters such as the support-removal margin, and choose when to align, merge or mesh their scans.
 
 ## Features
 
-- **End-to-end reconstruction**: from unordered photographs to textured meshes
-- **Two reconstruction paths**: COLMAP + OpenMVS (CPU/GPU flexible) or AliceVision (GPU-optimized)
-- **Assisted point cloud processing**: gravity-guided supporting-plane detection, multi-scale ICP registration with scale estimation, multi-strategy outlier filtering, Poisson surface reconstruction
-- **Quality presets**: Fast / Balanced / Quality one-click presets; every underlying parameter can be overridden in `~/.meshwork/config.yaml`
-- **Interactive 3D visualization**: PyVista-based viewport with real-time manipulation
-- **Containerized deployment**: Docker isolates all tool dependencies; one build script prepares and starts every service
-
-## Architecture
-
-```
-┌──────────────┐    Signals   ┌─────────────────┐    gRPC     ┌──────────────────┐    Invoke   ┌──────────────┐
-│ Presentation │◄────────────►│  Business Logic │◄───────────►│ Infrastructure   │◄───────────►│External Tools│
-│  Qt/PySide6  │   UI updates │  Scene mgmt,    │  Streaming  │ Docker containers│   Output    │ COLMAP,      │
-│  PyVista     │              │  Open3D algos   │             │ gRPC services    │             │ AliceVision, │
-│  Dialogs     │              │  Orchestration  │             │ Format convert   │             │ OpenMVS,     │
-└──────────────┘              └─────────────────┘             └──────────────────┘             │ Blender      │
-  Main thread                  Worker thread                   Async I/O                       └──────────────┘
-```
-
-An event-driven signal router provides thread-safe communication between the UI main thread and the business logic worker thread, maintaining interface responsiveness during long-running reconstruction operations.
+- **Reconstruction**: point clouds or textured meshes using COLMAP + OpenMVS or AliceVision
+- **Point cloud processing**: supporting-plane removal, scan alignment with scale estimation, outlier filtering and Poisson meshing
+- **Quality presets**: Fast / Balanced / Quality
+- **3D viewer**: inspect, position and export objects in a PyVista viewport
 
 ## Requirements
 
@@ -36,40 +20,32 @@ An event-driven signal router provides thread-safe communication between the UI 
 
 ## Quick Start
 
+These Bash commands start COLMAP + OpenMVS and Blender in CPU mode on Linux. For GPU setup or other platforms, see [Configuration](docs/CONFIGURATION.md).
+
 ```bash
 # 1. Clone the repository
 git clone https://github.com/UPC-ViRVIG/meshwork.git
 cd meshwork
 
-# 2. Install Python dependencies (a virtual environment is recommended)
+# 2. Create a Python environment and install dependencies
+python3 -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
 
-# 3. Build and start the containerized services (first build: 30-60 min)
+# 3. Build and start the required services
 cd docker
-./build.sh              # CPU mode; use  GPU=true ./build.sh  for NVIDIA GPU support
-docker compose up -d    # GPU mode: docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
-docker compose ps       # wait until all three services report "healthy"
+./build.sh colmap blender
+docker compose up -d colmap-service blender-service
+docker compose ps       # wait until both services report "healthy"
 cd ..
 
 # 4. Launch the GUI
 python main.py
 ```
 
-`build.sh` generates the gRPC stubs, creates the shared `.runtime/` workspace, copies
-`docker/.env.example` to `docker/.env` if needed and builds the three images. After the
-first build, step 3 reduces to `docker compose up -d` inside `docker/`. The containers
-publish their ports on `127.0.0.1` only and the GUI connects to those loopback endpoints
-by default, so no client configuration is needed. To reach a remote server, or to use the
-Unix domain sockets in `.runtime/socks/` instead, copy `.env.example` to `.env` in the
-repository root and edit the `MESHWORK_*` addresses.
+For later sessions, run `docker compose up -d colmap-service blender-service` from `docker/`, then launch the GUI from the repository root with the Python environment active. The default client endpoints connect to the local containers without additional configuration.
 
-See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for detailed setup options including
-remote GPU deployment, and [docs/REPRODUCTION.md](docs/REPRODUCTION.md) for the exact
-GUI steps used for the paper examples.
-
-## Reproducing Paper Results
-
-If you are reviewing or reproducing results from the SoftwareX paper, see [docs/REPRODUCTION.md](docs/REPRODUCTION.md) for step-by-step instructions for each dataset.
+Rebuilding with `build.sh` stops existing services and recreates `.runtime/`, deleting its shared workspace and logs. Save any files you need before rebuilding.
 
 ## Documentation
 
@@ -77,6 +53,20 @@ If you are reviewing or reproducing results from the SoftwareX paper, see [docs/
 - [DATASETS.md](docs/DATASETS.md) — Dataset sources, licenses, and download links
 - [CONFIGURATION.md](docs/CONFIGURATION.md) — Docker setup, deployment options, parameter reference
 - [scripts/eval/README.md](scripts/eval/README.md) — Evaluation scripts (plane-detection and scale ablations, reference comparison, metrics tables)
+
+## Architecture
+
+The Qt/PyVista GUI runs on the main thread and communicates with a processing worker through signals. Reconstruction and Blender operations use gRPC services in Docker containers.
+
+```
+┌──────────────┐    Signals   ┌─────────────────┐    gRPC     ┌──────────────────┐    Invoke   ┌──────────────┐
+│ Presentation │◄────────────►│  Business Logic │◄───────────►│ Infrastructure   │◄───────────►│External Tools│
+│  Qt/PySide6  │   UI updates │  Scene mgmt,    │  Streaming  │ Docker containers│   Output    │ COLMAP,      │
+│  PyVista     │              │  Open3D algos   │             │ gRPC services    │             │ AliceVision, │
+│  Dialogs     │              │  Orchestration  │             │ Format convert   │             │ OpenMVS,     │
+└──────────────┘              └─────────────────┘             └──────────────────┘             │ Blender      │
+  Main thread                  Worker thread                   Async I/O                       └──────────────┘
+```
 
 ## Project Structure
 
@@ -123,6 +113,4 @@ MIT License. See [LICENSE](LICENSE) for details.
 
 Developed within the [ViRVIG](https://www.virvig.eu/) group at Universitat Politècnica de Catalunya, Barcelona.
 
-Validation datasets provided by:
-- British Museum Digital Humanities (Alexander the Great, CC-BY-NC-SA)
-- Natowi (Flowerpot, CC-BY-SA 4.0)
+The examples use datasets from British Museum Digital Humanities, Natowi and MicroPasts. Sources, licenses and full attribution are listed in [DATASETS.md](docs/DATASETS.md).

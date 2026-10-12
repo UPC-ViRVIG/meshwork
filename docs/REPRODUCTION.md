@@ -17,7 +17,7 @@ Download the four datasets listed in [DATASETS.md](DATASETS.md), which includes 
 
 ### Reconstruction (Tools > 3D Reconstruction..., Ctrl+R)
 
-1. Set Input to the photograph folder and Output to a project folder.
+1. Set Input to the photograph folder and Output to a new project folder for that dataset or image subset.
 2. Select Tool `COLMAP`, the Quality preset and either `Point Cloud` or `Dense Mesh`, as specified in each example.
 3. Press Start. Progress and service output appear in the dialog.
 4. Press Import to load the result. For `Dense Mesh` this imports the mesh; use File > Import to load `dense_points.ply` for point-cloud processing.
@@ -33,7 +33,7 @@ Select objects in the Scene panel, choose a tool, check its parameters and press
 | Analyze Plane | Estimates gravity from camera poses, detects the support, rotates the object upright and recommends a cut Margin. |
 | Remove Plane | Removes points whose signed distance to the plane is below Margin, then applies `DBSCAN` or `Statistical` filtering. The cleaned cloud is centred at its centroid, with the support normal along z. |
 | Align Clouds | Select two clouds; the first listed in the Scene panel moves onto the second. For other datasets, use the Transform panel for coarse alignment if needed. |
-| Merge Clouds | Select two clouds and choose the filters. The merged cloud uses the second cloud's frame. |
+| Merge Clouds | Select two clouds and choose the filters. Their object transforms are applied before merging in world coordinates. |
 | Generate Mesh | Produces a Poisson mesh with vertex colours. |
 
 For the paper meshes, use Depth `9`, Fill holes enabled, Max hole size `400`, Simplify to `300000` triangles and Smooth iterations `1`. Parameter details and saved filenames are in [Configuration](CONFIGURATION.md#point-cloud-processing-parameters).
@@ -48,12 +48,14 @@ Processing stages append timings and metrics to `stage_metrics.jsonl` beside the
 python scripts/eval/collect_metrics.py "/path/to/run/result" --format latex
 ```
 
-`--last-per-stage` keeps the last record for each stage and object in each result folder. For repeated operations, sum the relevant timings separately: the paper's axe registration time includes two successive passes. UI latency is logged separately; see [Logging and UI latency](CONFIGURATION.md#logging-and-ui-latency).
+`--last-per-stage` keeps the last record for each stage and object in each result folder. For repeated operations, sum the relevant timings separately: the paper's axe registration time includes two successive passes. The summary table's `scale` is the correction within that pass; the paper's final object scale comes from `new_transform.scale` in `3.alignment_params.yaml`.
+
+UI latency is logged separately; see [Logging and UI latency](CONFIGURATION.md#logging-and-ui-latency).
 
 ## Example 1: Alexander the Great - baseline quality
 
 1. Reconstruct `alexanderTheGreat/images/` with Quality `Quality` and Output `Dense Mesh`.
-2. Import the result. Export as OBJ to keep the photo texture.
+2. Import the result. To preserve its photo texture, keep the original OBJ, MTL and texture images from the run's `result/` folder together.
 
 The reported run produced a textured mesh of approximately 280,000 vertices in 6.5 minutes. Image counts and settings are saved in `reconstruction.json`; timings are reported in the reconstruction log.
 
@@ -64,7 +66,7 @@ The reported run produced a textured mesh of approximately 280,000 vertices in 6
 3. Select the cleaned cloud and run Generate Mesh with the settings above.
 4. To compare outputs, repeat reconstruction with Output `Dense Mesh`.
 
-The cleaned Poisson mesh removes the table but shows colour interpolation near the cut. The OpenMVS mesh keeps the table and photographic texture. After merging scans, the pipeline uses Poisson because the merged cloud no longer has the photo correspondence needed for texturing.
+The cleaned Poisson mesh removes the table but shows colour interpolation near the cut. The OpenMVS mesh keeps the table and photographic texture.
 
 Compare plane detection with full-cloud RANSAC:
 
@@ -87,7 +89,7 @@ Optionally add `--gt-background "/path/to/table.ply"` to measure normal-angle an
 
 2. Reconstruct each subset into its own project folder with Quality `Balanced` and Output `Point Cloud`.
 3. Import A before B. For each cloud, run Analyze Plane, then Remove Plane with Method `DBSCAN`.
-4. Select both cleaned clouds, with A first in the Scene panel, and apply Align Clouds twice. The reported workflow uses two successive passes without manual pre-alignment.
+4. Select both cleaned clouds, with A first in the Scene panel, and apply Align Clouds twice without manual pre-alignment.
 5. Merge with `DBSCAN outlier removal`, `Statistical outlier removal` and `Normal consistency filter` enabled; leave radius filtering off.
 6. Select the merged cloud and run Generate Mesh with the settings above. The saved mesh is `5.mesh_d9_s300000.ply`; repeat runs may add a suffix.
 
@@ -135,7 +137,7 @@ The mask rotation matches the EXIF rotation applied to the photographs. Object l
 |---------|-------|
 | Services do not start | Run `docker compose logs` from `docker/`; check port conflicts on 50051–50053, disk space and `.runtime/` permissions. |
 | GUI cannot connect | Check `docker compose ps`, published ports and the endpoint settings in the repository `.env`. For socket permission errors, use loopback TCP or rebuild the service images. |
-| `Too many pings` | Check the client/server periods in [Keepalive](CONFIGURATION.md#keepalive); rebuild service images after changes. |
+| `Too many pings` | Check the client/server periods in [Keepalive](CONFIGURATION.md#keepalive). Rebuild service images after server-side configuration changes. |
 | Dense reconstruction runs out of memory | Try `Balanced` or `Fast`; `Quality` needs more RAM. |
-| `images.txt` is missing | For an imported cloud without camera poses, orient it upright with Transform; Analyze Plane then uses the scene's vertical axis. |
+| Analyze Plane on an external cloud | Place the PLY in its own directory as `dense_points.ply` and import that file. Without `images.txt`, orient the cloud upright with Transform; Analyze Plane uses the scene's vertical axis. |
 | AliceVision cannot detect the GPU | Check the NVIDIA Container Toolkit and run `docker compose exec alicevision-service nvidia-smi`. |

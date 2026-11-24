@@ -50,13 +50,14 @@ def main():
 
     def label(key, rem):
         if loss is not None:
-            return '%.1f%% of the object removed' % (100 * loss[key]['object_points_removed'])
-        return '%.1f%% of the cloud removed' % (100 * rem.mean())
+            return '%.1f%% object loss' % (100 * loss[key]['object_points_removed'])
+        return '%.1f%% cloud removed' % (100 * rem.mean())
 
-    fig, axes = plt.subplots(1, 3, figsize=(10.5, 4.9))
-    titles = ['(a) dense cloud with the two detected planes',
-              '(b) gravity-guided cut, ' + label('radial_profile', rem_g),
-              '(c) full-cloud RANSAC cut, ' + label('full_cloud_ransac', rem_r)]
+    # At the manuscript's 5.4-inch width, these fonts print at about 8--9 pt.
+    fig, axes = plt.subplots(1, 3, figsize=(10.5, 5.5))
+    titles = ['(a) Dense cloud\nDetected planes',
+              '(b) Gravity-guided cut\n' + label('radial_profile', rem_g),
+              '(c) Full-cloud RANSAC\n' + label('full_cloud_ransac', rem_r)]
     for ax, title, rem in zip(axes, titles, [None, rem_g, rem_r]):
         if rem is None:
             ax.scatter(X[idx], Y[idx], s=0.25, c=C[idx], marker='.', linewidths=0, rasterized=True)
@@ -70,7 +71,7 @@ def main():
         ax.set_aspect('equal')
         ax.set_xticks([])
         ax.set_yticks([])
-        ax.set_title(title, fontsize=8.5)
+        ax.set_title(title, fontsize=17, pad=10)
 
     def line(ax, n, dd, style, text, off=0.0):
         a1, a2 = n @ e1, n @ e2
@@ -83,14 +84,17 @@ def main():
         ax.plot(xs, ys, style, lw=1.2, label=text)
 
     ax = axes[0]
-    line(ax, ng, dg, 'b-', 'gravity-guided (support)')
+    line(ax, ng, dg, 'b-', 'gravity-guided plane')
     line(ax, ng, dg, 'b--', 'recommended margin', margin)
     line(ax, nr, dr, 'r-', 'full-cloud RANSAC')
     line(ax, nr, dr, 'r--', None, margin)
     ax.set_xlim(xl)
     ax.set_ylim(yl)
-    ax.legend(fontsize=7, loc='lower left', framealpha=0.9)
-    plt.tight_layout()
+    handles, labels = ax.get_legend_handles_labels()
+    fig.legend(handles, labels, fontsize=16, loc='lower center',
+               bbox_to_anchor=(0.5, 0.015), ncol=3, frameon=False,
+               columnspacing=1.2, handlelength=2)
+    fig.tight_layout(rect=(0, 0.12, 1, 1))
     out = a.out or os.path.join(ev_dir, 'plane_cuts.png')
     plt.savefig(out, dpi=a.dpi)
     print(out)

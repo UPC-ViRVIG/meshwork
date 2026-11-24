@@ -100,7 +100,7 @@ python scripts/eval/ablation_scale.py "/path/to/scanA/result/2.cleaned_m0.068.pl
     "/path/to/scanB/result/2.cleaned_m0.031.ply"
 ```
 
-Use the filenames produced by your run if the recommended margins differ. For the scale-perturbation experiments, add `--source-transform scale.json`, containing `{"location": [0, 0, 0], "rotation": [0, 0, 0], "scale": [0.9, 0.9, 0.9]}`. Test factors `0.9`, `1.1` and `0.8`, each five times with a separate `--out` path. This changes the cloud's scale, not the acquisition conditions.
+Use the filenames produced by your run if the recommended margins differ. For the scale-perturbation experiments, add `--source-transform scale.json`, containing `{"location": [0, 0, 0], "rotation": [0, 0, 0], "scale": [0.9, 0.9, 0.9]}`. Test factors `0.9`, `1.1` and `0.8`, each five times with a separate `--out` path. This changes the cloud's scale, not the acquisition conditions. These runs test the sensitivity of the complete pipeline; their independent random initialisations do not isolate the benefit of scale search.
 
 Compare the merged mesh with the dataset's PhotoScan reference:
 
@@ -114,11 +114,13 @@ The comparison uses a similarity alignment and reports distances relative to the
 
 ## Example 4: Limestone capital - a support smaller than the object
 
+These steps reproduce the reconstruction run reported in the paper:
+
 1. Reconstruct `architecturalElement/images/` with Quality `Balanced` and Output `Dense Mesh`.
 2. Use File > Import to load the run's `dense_points.ply`. Select it and run Analyze Plane.
 3. Run Remove Plane with Method `DBSCAN`, then Generate Mesh with the settings above.
 
-The gallery walls are barely reconstructed, leaving a small ring of plinth points below the capital. In the reported ablation, full-cloud RANSAC cuts through the capital and removes 49.8% of mask-labelled object points; the guided cut removes 18.8%. The recommended margin still removes part of the base. Reduce it if preserving the base is the aim; the reported ablation uses the unadjusted recommendation.
+The gallery walls are barely reconstructed, leaving a small ring of plinth points below the capital. In the reported ablation, both detected planes intersect the object. With the recommended margin, full-cloud RANSAC removes 49.8% of mask-labelled object points and the guided cut removes 18.8%; even at zero margin, losses are 25.8% and 9.0%, respectively. Reducing the margin therefore cannot guarantee preservation of the base. Users who need to preserve it can skip plane removal and retain the uncut cloud; the reported ablation uses the unadjusted recommendation.
 
 ```bash
 python scripts/eval/ablation_plane.py "/path/to/capital/result"

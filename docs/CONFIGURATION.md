@@ -174,7 +174,7 @@ Output names below are patterns: `<...>` denotes a parameter value or filter sel
 
 - Gravity: negated, normalized mean of the camera up-vectors in `images.txt` (COLMAP text model). This assumes upright photographs after EXIF orientation. Without camera poses, gravity follows the scene vertical axis; orient the object upright in the Transform panel first.
 - Radial profiles: 50 height layers along gravity; each records the mean, mean square and 90th percentile of radial distance, plus the mean multiplied by `log(1 + point count)`. Profile changes identify candidate support regions.
-- Plane fit: RANSAC (`ransac_n` 3, 1000 iterations) on candidate subsets of at least 500 points. The threshold is one quarter of the subset's height extent, clipped to `[0.001, D/50]`. Candidates with |cos(normal, gravity)| < 0.7 are rejected; the score is inlier ratio minus 0.1 times a height penalty. If no candidate passes, gravity-aligned fallbacks use the profile boundary or the 2nd height percentile.
+- Plane fit: candidate regions span the centres of their outermost selected layers. RANSAC (`ransac_n` 3, 1000 iterations) fits subsets of at least 500 points. The threshold is one quarter of the distance between the region boundaries, clipped to `[0.001, D/50]`; for zero thickness it is `D/50`. Candidates with |cos(normal, gravity)| < 0.7 are rejected; the score is inlier ratio minus 0.1 times a height penalty. If no candidate passes, gravity-aligned fallbacks use the profile boundary or the 2nd height percentile.
 - Margin: 99th percentile of candidate-point signed distances above the plane, plus half a height layer, clipped to `[0.005, 0.5]` scene units. The two fallbacks use bounds `[0.01, 0.4]` and `[0.02, 0.4]`. Inspect and adjust the margin before removal.
 - Outputs: `1.stage1_params.yaml`, `1.radial_profile.csv`, `1.radial_profile_candidates_raw.csv`, `1.plane_candidates.csv`.
 
@@ -187,10 +187,11 @@ Output names below are patterns: `<...>` denotes a parameter value or filter sel
 ### Registration (Align Clouds)
 
 - Voxel size v = D/200, using the average diagonal of both clouds; each voxel is represented by its point centroid. Normals use 30 neighbours within 2v.
-- Global initialization: FPFH features (radius 5v) with RANSAC (distance 1.5v, 100000 iterations, confidence 0.999), compared against the identity with 10 point-to-plane ICP iterations each; the lower inlier RMSE is kept.
+- Global initialization: FPFH features (radius 5v) with RANSAC (distance 1.5v, 100000 iterations, confidence 0.999), compared against the identity with 10 point-to-plane ICP iterations each; the starting transform whose trial has the lower inlier RMSE is used.
 - Multi-scale point-to-plane ICP at voxel sizes v, 0.6v and 0.3v, at most 50 iterations per level, correspondence distance 2 voxels.
-- Scale estimation: after every level the candidate factors 0.95, 0.97, 0.99, 1.0, 1.01, 1.03 and 1.05 are tested with 3 ICP iterations and the factor with the lowest RMSE is applied; the cumulative factor is clipped to [0.8, 1.5].
+- Scale estimation: after every level the candidate factors 0.95, 0.97, 0.99, 1.0, 1.01, 1.03 and 1.05 are tested with 3 ICP iterations each. The factor with the lowest trial RMSE is applied only if it improves on the pre-search RMSE; the trial rigid transforms are discarded. The cumulative factor is clipped to [0.8, 1.5].
 - ICP levels and scale-search settings live in `ALIGN_CONFIG` in `core/pointcloud.py`; setting `estimate_scale` to `False` disables the scale search (used by `scripts/eval/ablation_scale.py`).
+- Final fitness and inlier RMSE evaluate the actual returned transform on the last ICP level's samples, using the same correspondence threshold in target-local coordinates. Per-level fitness and inlier RMSE describe ICP before scale search; `rmse_after_scale` is the best pre-search or trial ICP value, not the final output's RMSE.
 - Outputs: `3.alignment_params.yaml` (fitness, inlier RMSE, initialization, per-level records, cumulative scale, resulting transform).
 
 ### Merge and cleaning (Merge Clouds)

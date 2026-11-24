@@ -648,6 +648,8 @@ class PointcloudAPI(QObject, Executor):
                     'estimate_scale': registration.get('estimate_scale'),
                     'cumulative_scale': registration.get('cumulative_scale'),
                     'levels': registration.get('levels'),
+                    'level_metric_semantics': registration.get('level_metric_semantics'),
+                    'evaluation': registration.get('evaluation'),
                 }, object=source_object, target=target_object, output=yaml_path.name)
 
                 self.signal_router.emit('transform.apply_transform', {
@@ -2308,8 +2310,12 @@ class PointcloudAPI(QObject, Executor):
 
         cumulative_scale = 1.0
         pcd_source_scaled = copy.deepcopy(pcd_source_in_target)
+        # Map raw source coordinates to the coordinates used for downsampling.
+        # Track the actual centroid scales, independently of the clipped scalar.
+        source_sampling_transform = T_relative.copy()
 
         for idx, vs in enumerate(voxel_sizes):
+            last_sampling_transform = source_sampling_transform.copy()
             source_down_icp = pcd_source_scaled.voxel_down_sample(vs)
             target_down_icp = pcd_target.voxel_down_sample(vs)
 
@@ -2353,12 +2359,17 @@ class PointcloudAPI(QObject, Executor):
                     best_scale = test_scale
 
             if best_scale != 1.0:
-                pcd_source_scaled.scale(best_scale, center=pcd_source_scaled.get_center())
+                scale_center = pcd_source_scaled.get_center()
+                pcd_source_scaled.scale(best_scale, center=scale_center)
+                centroid_scale = np.eye(4)
+                centroid_scale[:3, :3] *= best_scale
+                centroid_scale[:3, 3] = (1.0 - best_scale) * scale_center
+                source_sampling_transform = centroid_scale @ source_sampling_transform
                 cumulative_scale *= best_scale
                 cumulative_scale = float(np.clip(cumulative_scale, *ALIGN_CONFIG['scale_clip']))
-                self.logger.info(f"ICP scale {idx+1}/{len(voxel_sizes)} (voxel={vs:.6f}): fitness={result_icp.fitness:.6f}, rmse={best_rmse:.6f}, best_scale={best_scale:.6f}, cumulative={cumulative_scale:.6f}")
+                self.logger.info(f"ICP scale {idx+1}/{len(voxel_sizes)} (voxel={vs:.6f}): fitness_before_scale={result_icp.fitness:.6f}, best_trial_rmse={best_rmse:.6f}, best_scale={best_scale:.6f}, cumulative={cumulative_scale:.6f}")
             else:
-                self.logger.info(f"ICP scale {idx+1}/{len(voxel_sizes)} (voxel={vs:.6f}): fitness={result_icp.fitness:.6f}, rmse={result_icp.inlier_rmse:.6f}, scale=1.0 (no adjustment)")
+                self.logger.info(f"ICP scale {idx+1}/{len(voxel_sizes)} (voxel={vs:.6f}): fitness_before_scale={result_icp.fitness:.6f}, rmse_before_scale={result_icp.inlier_rmse:.6f}, scale=1.0 (no adjustment)")
 
             level_records.append({
                 'level': idx + 1,
@@ -2394,6 +2405,38 @@ class PointcloudAPI(QObject, Executor):
         scale_lo, scale_hi = ALIGN_CONFIG['scale_clip']
         new_scale = np.clip(new_scale, source_transform['scale'] * scale_lo, source_transform['scale'] * scale_hi)
 
+        # Evaluate the transform callers will actually apply, on the unchanged
+        # final-level samples. Trial ICP results need not describe that transform.
+        returned_source_transform = self._compose_transform_matrix(
+            new_location, new_rotation, new_scale)
+        evaluation_transform = (
+            np.linalg.inv(T_t) @ returned_source_transform
+            @ np.linalg.inv(last_sampling_transform)
+        )
+        final_evaluation = o3d.pipelines.registration.evaluate_registration(
+            source_down_icp, target_down_icp, vs * 2.0, evaluation_transform)
+        evaluation = {
+            'method': 'open3d.evaluate_registration',
+            'sampling': 'final_icp_level_before_scale_search',
+            'coordinate_frame': 'target_local',
+            'distance_units': 'target_local_scene_units',
+            'voxel_size': float(vs),
+            'max_correspondence_distance': float(vs * 2.0),
+            'source_points': int(len(source_down_icp.points)),
+            'target_points': int(len(target_down_icp.points)),
+            'correspondences': int(len(final_evaluation.correspondence_set)),
+            'source_input_transform': T_s.tolist(),
+            'target_input_transform': T_t.tolist(),
+            # Raw source -> sampled coordinates, and raw source -> scene/world.
+            'source_sampling_transform': last_sampling_transform.tolist(),
+            'returned_source_transform': returned_source_transform.tolist(),
+            'sampling_to_target_transform': evaluation_transform.tolist(),
+        }
+        self.logger.info(
+            f"Final returned-transform evaluation: fitness={final_evaluation.fitness:.6f}, "
+            f"rmse={final_evaluation.inlier_rmse:.6f} (target-local scene units)"
+        )
+
         self.logger.info(f"Decomposed result:")
         self.logger.info(f"  new_location: [{new_location[0]:.6f}, {new_location[1]:.6f}, {new_location[2]:.6f}]")
         self.logger.info(f"  new_rotation: [{new_rotation[0]:.6f}, {new_rotation[1]:.6f}, {new_rotation[2]:.6f}]")
@@ -2407,8 +2450,8 @@ class PointcloudAPI(QObject, Executor):
             'location': new_location,
             'rotation': new_rotation,
             'scale': new_scale,
-            'fitness': result_icp.fitness,
-            'rmse': result_icp.inlier_rmse,
+            'fitness': final_evaluation.fitness,
+            'rmse': final_evaluation.inlier_rmse,
             'registration': {
                 'init_method': init_method,
                 'voxel_size': float(voxel_size),
@@ -2419,6 +2462,12 @@ class PointcloudAPI(QObject, Executor):
                 'estimate_scale': bool(ALIGN_CONFIG['estimate_scale']),
                 'cumulative_scale': float(cumulative_scale),
                 'levels': level_records,
+                'level_metric_semantics': {
+                    'fitness': 'icp_before_scale_search',
+                    'inlier_rmse': 'icp_before_scale_search',
+                    'rmse_after_scale': 'best_pre_scale_or_trial_icp_not_final_output',
+                },
+                'evaluation': evaluation,
             }
         }
 
